@@ -327,6 +327,12 @@ def main() -> None:
                 elif ch == "\x1b":
                     session.write_raw("\x1b")
                     log("key", f"#{input_count} Escape")
+                elif ch == "\x08":
+                    # Backspace: send \x7f (DEL) instead of \x08 (BS).
+                    # Most VT100 terminals send DEL for backspace.
+                    # PSReadLine treats \x08 as "undo group" but \x7f as "delete char".
+                    session.write_raw("\x7f")
+                    log("key", f"#{input_count} Backspace (0x08→0x7F) repeat={repeat}")
                 elif ord(ch) < 0x20:
                     session.write_raw(ch)
                     log("key", f"#{input_count} control: 0x{ord(ch):02X} vk=0x{vk:04X} repeat={repeat}")
