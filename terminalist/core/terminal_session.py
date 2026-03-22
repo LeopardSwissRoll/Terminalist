@@ -178,20 +178,29 @@ class TerminalSession:
         if self._backend.is_alive():
             self._backend.write(text + "\r\n")
 
+    def _read_line(self, y: int) -> str:
+        """Read a single screen line, handling CJK wide char stubs.
+
+        pyte uses stub cells (data="") for the second column of wide chars.
+        We skip stubs so "한글" renders as "한글", not "한 글 ".
+        """
+        try:
+            row = self._screen.buffer[y]
+            parts: list[str] = []
+            for x in range(self._screen.columns):
+                data = row[x].data
+                if data == "":
+                    # CJK stub cell (second half of wide char) — skip
+                    continue
+                parts.append(data or " ")
+            return "".join(parts)
+        except (IndexError, KeyError):
+            return " " * self._screen.columns
+
     def get_display(self) -> list[str]:
         """Return current screen content."""
         with self._lock:
-            result: list[str] = []
-            for y in range(self._screen.lines):
-                try:
-                    line = "".join(
-                        self._screen.buffer[y][x].data or " "
-                        for x in range(self._screen.columns)
-                    )
-                except (IndexError, KeyError):
-                    line = " " * self._screen.columns
-                result.append(line)
-            return result
+            return [self._read_line(y) for y in range(self._screen.lines)]
 
     def get_display_tail(self, n: int = 5) -> list[str]:
         """Return n lines around the cursor (for prompt detection).
@@ -201,20 +210,9 @@ class TerminalSession:
         """
         with self._lock:
             cursor_y = self._screen.cursor.y
-            # Take lines from (cursor_y - n + 1) to (cursor_y + 1)
             end = min(cursor_y + 1, self._screen.lines)
             start = max(0, end - n)
-            result: list[str] = []
-            for y in range(start, end):
-                try:
-                    line = "".join(
-                        self._screen.buffer[y][x].data or " "
-                        for x in range(self._screen.columns)
-                    )
-                except (IndexError, KeyError):
-                    line = " " * self._screen.columns
-                result.append(line)
-            return result
+            return [self._read_line(y) for y in range(start, end)]
 
     # ── Reader loop ──
 
