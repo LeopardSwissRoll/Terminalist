@@ -1,10 +1,18 @@
 """Debug logging for Terminalist.
 
-When --debug is passed, logs to terminalist_debug.log with detailed
-tracing of every layer: Textual events, session state, PTY I/O, TES events.
+Provides layer-based logging with automatic environment detection
+(VSCode integrated terminal vs. external terminal).
 
 Usage:
-    python -m terminalist.app --debug
+    from terminalist.debug import init_debug, log
+    init_debug(enabled=True)                     # auto-detect env
+    init_debug(enabled=True, log_path="my.log")  # explicit path
+    init_debug(enabled=True, env_tag="external")  # explicit tag
+
+Environment detection:
+    VSCODE_PID in env → tag="vscode", log="terminalist_debug_vscode.log"
+    otherwise         → tag="external", log="terminalist_debug_external.log"
+    TERMINALIST_ENV   → override (set by dualrun.py)
 """
 
 from __future__ import annotations
@@ -23,6 +31,8 @@ except Exception:  # pragma: no cover
     ctypes = None
 
 _logger: logging.Logger | None = None
+_env_tag: str = "unknown"
+
 _CONTEXT_ENV_KEYS = [
     "TERM",
     "COLORTERM",
@@ -34,35 +44,66 @@ _CONTEXT_ENV_KEYS = [
     "VSCODE_CWD",
     "VSCODE_IPC_HOOK_CLI",
     "VSCODE_INJECTION",
+    "TERMINALIST_ENV",
     "PROMPT",
     "ComSpec",
 ]
 
 
-def init_debug(enabled: bool = False) -> None:
-    """Initialize debug logging. Call once at startup."""
-    global _logger
+def detect_env() -> str:
+    """Detect terminal environment. Returns 'vscode' or 'external'."""
+    # Explicit override from dualrun
+    explicit = os.environ.get("TERMINALIST_ENV")
+    if explicit:
+        return explicit
+    # VSCode detection
+    if os.environ.get("VSCODE_PID") or os.environ.get("VSCODE_INJECTION"):
+        return "vscode"
+    return "external"
+
+
+def default_log_path(env_tag: str | None = None) -> Path:
+    """Return default log file path based on environment."""
+    tag = env_tag or detect_env()
+    return Path(f"terminalist_debug_{tag}.log")
+
+
+def init_debug(
+    enabled: bool = False,
+    log_path: str | Path | None = None,
+    env_tag: str | None = None,
+) -> None:
+    """Initialize debug logging. Call once at startup.
+
+    Args:
+        enabled: Enable debug logging.
+        log_path: Explicit log file path. Auto-generated if None.
+        env_tag: Environment tag ('vscode', 'external', etc.). Auto-detected if None.
+    """
+    global _logger, _env_tag
     if not enabled:
         _logger = None
         return
+
+    _env_tag = env_tag or detect_env()
 
     _logger = logging.getLogger("terminalist")
     _logger.setLevel(logging.DEBUG)
     _logger.handlers.clear()
 
-    log_path = Path("terminalist_debug.log")
-    fh = logging.FileHandler(str(log_path), mode="w", encoding="utf-8")
+    path = Path(log_path) if log_path else default_log_path(_env_tag)
+    fh = logging.FileHandler(str(path), mode="w", encoding="utf-8")
     fh.setLevel(logging.DEBUG)
     fmt = logging.Formatter(
-        "%(asctime)s.%(msecs)03d [%(name)s] %(message)s",
+        f"%(asctime)s.%(msecs)03d [{_env_tag:8s}] %(message)s",
         datefmt="%H:%M:%S",
     )
     fh.setFormatter(fmt)
     _logger.addHandler(fh)
 
-    _logger.info("=== Terminalist debug logging started ===")
+    _logger.info(f"=== Terminalist debug logging started (env={_env_tag}) ===")
     _logger.info(f"Python {sys.version}")
-    _logger.info(f"Log file: {log_path.resolve()}")
+    _logger.info(f"Log file: {path.resolve()}")
     log_runtime_context()
 
 
@@ -70,18 +111,21 @@ def log(layer: str, msg: str) -> None:
     """Log a debug message from a specific layer.
 
     Layers:
-        app      — Textual App level (mount, compose, actions)
+        app      — Main loop (startup, shutdown, tick)
         ctx      — Host terminal / runtime context
-        focus    — Focus/blur events on widgets
-        key      — Key events (which widget, what key, forwarded?)
+        focus    — Focus/blur events
+        key      — Key events (which pane, what key, forwarded?)
         click    — Mouse click events
         mouse    — Mouse drag / copy interactions
         session  — Session state transitions
         pty      — PTY spawn/read/write/kill
         pyte     — pyte screen feed/dirty
         screen   — Visible screen snapshots after PTY feeds
-        tes      — TES event publish/consume/dispatch
-        render   — render_line calls
+        tes      — TES event publish/consume/dispatch/gc
+        render   — Compositor output (diff, cells written)
+        layout   — Split tree / pane geometry
+        input    — Input backend (raw bytes, parsed keys)
+        chrome   — Tab bar / status bar
     """
     if _logger is not None:
         _logger.debug(f"[{layer:8s}] {msg}")
@@ -89,6 +133,10 @@ def log(layer: str, msg: str) -> None:
 
 def is_enabled() -> bool:
     return _logger is not None
+
+
+def get_env_tag() -> str:
+    return _env_tag
 
 
 def _console_code_pages() -> str:
@@ -114,6 +162,7 @@ def _stdio_description(name: str, stream, fd: int) -> str:
 
 def log_runtime_context() -> None:
     """Log startup/runtime context useful for host-terminal debugging."""
+    log("ctx", f"env_tag={_env_tag}")
     log("ctx", f"argv={sys.argv!r}")
     log("ctx", f"cwd={Path.cwd()}")
     log("ctx", f"platform={platform.platform()}")

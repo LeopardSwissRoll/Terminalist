@@ -194,11 +194,18 @@ class TerminalSession:
             return result
 
     def get_display_tail(self, n: int = 5) -> list[str]:
-        """Return last n lines of screen content (for prompt detection)."""
+        """Return n lines around the cursor (for prompt detection).
+
+        Uses cursor.y as anchor — the prompt is where the cursor is,
+        not necessarily at the bottom of the screen buffer.
+        """
         with self._lock:
-            start = max(0, self._screen.lines - n)
+            cursor_y = self._screen.cursor.y
+            # Take lines from (cursor_y - n + 1) to (cursor_y + 1)
+            end = min(cursor_y + 1, self._screen.lines)
+            start = max(0, end - n)
             result: list[str] = []
-            for y in range(start, self._screen.lines):
+            for y in range(start, end):
                 try:
                     line = "".join(
                         self._screen.buffer[y][x].data or " "
