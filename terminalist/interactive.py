@@ -146,10 +146,10 @@ def _terminal_size() -> tuple[int, int]:
         return 30, 120
 
 
-def _read_console_input(h_in: int) -> tuple[str | None, int, int]:
+def _read_console_input(h_in: int) -> tuple[str | None, int, int, int]:
     """Read one key-down event via ReadConsoleInputW.
 
-    Returns (char_or_none, virtual_key_code, control_key_state).
+    Returns (char_or_none, virtual_key_code, control_key_state, repeat_count).
     Blocks until a KEY_DOWN event arrives.
     """
     record = INPUT_RECORD()
@@ -171,9 +171,10 @@ def _read_console_input(h_in: int) -> tuple[str | None, int, int]:
         ch = ke.uChar
         vk = ke.wVirtualKeyCode
         ctrl = ke.dwControlKeyState
+        repeat = ke.wRepeatCount
         # '\x00' (NUL) means no character — treat as None
         # This happens for special keys (arrows, F-keys, etc.)
-        return (ch if ch and ch != "\x00" else None, vk, ctrl)
+        return (ch if ch and ch != "\x00" else None, vk, ctrl, repeat)
 
 
 def parse_args() -> argparse.Namespace:
@@ -255,9 +256,9 @@ def main() -> None:
     kernel32.SetConsoleMode(h_in, 0)
     log("input", f"Console raw mode set (old=0x{old_mode.value:04x})")
 
-    # ── DA drain ──
-    log("input", "Draining initial terminal responses (3s)...")
-    drain_end = time.monotonic() + 3.0
+    # ── DA drain (1s — VSCode xterm.js sends DA responses slowly) ──
+    log("input", "Draining initial terminal responses (1s)...")
+    drain_end = time.monotonic() + 1.0
     drain_count = 0
     while time.monotonic() < drain_end:
         avail = wt.DWORD()
@@ -283,18 +284,18 @@ def main() -> None:
                 time.sleep(0.01)
                 continue
 
-            ch, vk, ctrl = _read_console_input(h_in)
+            ch, vk, ctrl, repeat = _read_console_input(h_in)
             input_count += 1
 
-            # ── IME processed key → skip (확정 이벤트가 뒤따름) ──
+            # ── IME processed key — log detail then skip ──
             if vk == VK_PROCESSKEY:
-                log("key", f"#{input_count} VK_PROCESSKEY (IME composing, skip)")
+                log("key", f"#{input_count} VK_PROCESSKEY ch={ch!r} repeat={repeat} (skip)")
                 continue
 
             # ── IME confirmed Korean (vk=0x0000) → forward ──
             if ch and vk == 0x0000:
                 session.write_raw(ch)
-                log("key", f"#{input_count} IME confirmed: {ch!r} (U+{ord(ch):04X})")
+                log("key", f"#{input_count} IME confirmed: {ch!r} (U+{ord(ch):04X}) repeat={repeat}")
                 continue
 
             # ── Ctrl+C ──
@@ -312,7 +313,7 @@ def main() -> None:
             if ch is None and vk in _SPECIAL_VK:
                 ansi = _SPECIAL_VK[vk]
                 session.write_raw(ansi)
-                log("key", f"#{input_count} special: vk=0x{vk:04X} → {ansi!r}")
+                log("key", f"#{input_count} special: vk=0x{vk:04X} → {ansi!r} repeat={repeat}")
                 continue
 
             # ── Regular character ──
@@ -328,7 +329,7 @@ def main() -> None:
                     log("key", f"#{input_count} Escape")
                 elif ord(ch) < 0x20:
                     session.write_raw(ch)
-                    log("key", f"#{input_count} control: 0x{ord(ch):02X}")
+                    log("key", f"#{input_count} control: 0x{ord(ch):02X} vk=0x{vk:04X} repeat={repeat}")
                 else:
                     session.write_raw(ch)
                     if input_count % 20 == 0:
@@ -336,7 +337,7 @@ def main() -> None:
                 continue
 
             # ── Unhandled ──
-            log("key", f"#{input_count} unhandled: ch={ch!r} vk=0x{vk:04X} ctrl=0x{ctrl:08X}")
+            log("key", f"#{input_count} unhandled: ch={ch!r} vk=0x{vk:04X} ctrl=0x{ctrl:08X} repeat={repeat}")
 
     except Exception as e:
         log("app", f"INPUT LOOP CRASHED: {type(e).__name__}: {e}")

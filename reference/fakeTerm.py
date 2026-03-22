@@ -3,6 +3,8 @@
 Spawns a CLI process inside a PTY and bridges it to the current terminal.
 User sees and interacts with the process as if running it directly.
 
+Uses ReadConsoleInputW instead of msvcrt.getwch() for proper Korean IME support.
+
 Usage:
     python fakeTerm.py                          # default: claude --verbose
     python fakeTerm.py "codex --no-alt-screen"  # custom command
@@ -13,41 +15,65 @@ Detach: Ctrl+C twice within 1 second.
 """
 from __future__ import annotations
 
+import ctypes
+import ctypes.wintypes as wt
 import os
 import signal
 import sys
 import threading
 import time
 
-# ── Windows: Enable ANSI escape processing ──
-# Without this, PTY output containing ANSI codes (colors, cursor movement)
-# renders as garbage text instead of being interpreted by the terminal.
+# ── Windows Console API ──
+
+kernel32 = ctypes.windll.kernel32
+
+STD_INPUT_HANDLE = -10
+STD_OUTPUT_HANDLE = -11
+KEY_EVENT = 0x0001
+ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+VK_PROCESSKEY = 0xE5  # IME intercepted this key
+
+
+class KEY_EVENT_RECORD(ctypes.Structure):
+    _fields_ = [
+        ("bKeyDown", wt.BOOL),
+        ("wRepeatCount", wt.WORD),
+        ("wVirtualKeyCode", wt.WORD),
+        ("wVirtualScanCode", wt.WORD),
+        ("uChar", wt.WCHAR),
+        ("dwControlKeyState", wt.DWORD),
+    ]
+
+class INPUT_RECORD_UNION(ctypes.Union):
+    _fields_ = [("KeyEvent", KEY_EVENT_RECORD)]
+
+class INPUT_RECORD(ctypes.Structure):
+    _fields_ = [
+        ("EventType", wt.WORD),
+        ("Event", INPUT_RECORD_UNION),
+    ]
+
+
 def _enable_vt():
-    if os.name != "nt":
-        return
-    import ctypes
-    k32 = ctypes.windll.kernel32
-    h = k32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+    """Enable ANSI escape processing on Windows console."""
+    h = kernel32.GetStdHandle(STD_OUTPUT_HANDLE)
     mode = ctypes.c_ulong()
-    k32.GetConsoleMode(h, ctypes.byref(mode))
-    k32.SetConsoleMode(h, mode.value | 0x0004)  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    kernel32.GetConsoleMode(h, ctypes.byref(mode))
+    kernel32.SetConsoleMode(h, mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING)
 
 
-# ── Windows special key → ANSI escape sequence ──
-# msvcrt.getwch() returns a two-character sequence for special keys:
-# first char is \x00 or \xe0 (prefix), second is the key code.
-# We map these to standard ANSI sequences the PTY process expects.
-_SPECIAL_KEYS = {
-    "H": "\x1b[A",   # Up
-    "P": "\x1b[B",   # Down
-    "M": "\x1b[C",   # Right
-    "K": "\x1b[D",   # Left
-    "G": "\x1b[H",   # Home
-    "O": "\x1b[F",   # End
-    "I": "\x1b[5~",  # Page Up
-    "Q": "\x1b[6~",  # Page Down
-    "S": "\x1b[3~",  # Delete
-    "R": "\x1b[2~",  # Insert
+# ── Special key VK → ANSI escape sequence ──
+_SPECIAL_VK = {
+    0x26: "\x1b[A",   # VK_UP
+    0x28: "\x1b[B",   # VK_DOWN
+    0x27: "\x1b[C",   # VK_RIGHT
+    0x25: "\x1b[D",   # VK_LEFT
+    0x24: "\x1b[H",   # VK_HOME
+    0x23: "\x1b[F",   # VK_END
+    0x21: "\x1b[5~",  # VK_PRIOR (Page Up)
+    0x22: "\x1b[6~",  # VK_NEXT (Page Down)
+    0x2E: "\x1b[3~",  # VK_DELETE
+    0x2D: "\x1b[2~",  # VK_INSERT
 }
 
 
@@ -59,8 +85,41 @@ def _terminal_size() -> tuple[int, int]:
         return 30, 120
 
 
+def _read_console_input(h_in: int) -> tuple[str | None, int]:
+    """Read one key-down event via ReadConsoleInputW.
+
+    Returns (char_or_none, virtual_key_code).
+    For IME-composed Korean: char='한', vk=0x0000
+    For regular keys:        char='a',  vk=0x41
+    For special keys:        char=None, vk=0x26 (VK_UP)
+    """
+    record = INPUT_RECORD()
+    read_count = wt.DWORD()
+
+    while True:
+        kernel32.ReadConsoleInputW(
+            h_in,
+            ctypes.byref(record),
+            1,
+            ctypes.byref(read_count),
+        )
+        if record.EventType != KEY_EVENT:
+            continue
+        ke = record.Event.KeyEvent
+        if not ke.bKeyDown:
+            continue
+
+        ch = ke.uChar
+        vk = ke.wVirtualKeyCode
+        # '\x00' (NUL) means no character — treat as None
+        # This happens for special keys (arrows, F-keys, etc.)
+        if ch and ch != "\x00":
+            return ch, vk
+        else:
+            return None, vk
+
+
 def run(command: str, cwd: str | None = None) -> None:
-    import msvcrt
     from winpty import PtyProcess
 
     _enable_vt()
@@ -70,7 +129,7 @@ def run(command: str, cwd: str | None = None) -> None:
     stop = threading.Event()
     last_size = (rows, cols)
 
-    # ── Ctrl+C: single → forward to PTY, double (< 1s) → exit ──
+    # ── Ctrl+C handling ──
     last_sigint = [0.0]
     prev_handler = signal.getsignal(signal.SIGINT)
 
@@ -96,7 +155,6 @@ def run(command: str, cwd: str | None = None) -> None:
                 if data:
                     sys.stdout.write(data)
                     sys.stdout.flush()
-                # Resize detection
                 new = _terminal_size()
                 if new != last_size:
                     last_size = new
@@ -114,125 +172,77 @@ def run(command: str, cwd: str | None = None) -> None:
     t = threading.Thread(target=reader, daemon=True)
     t.start()
 
-    # ── Terminal response filter ──
-    # CLI apps (Claude, etc.) send terminal queries:
-    #   \x1b[c        Primary DA
-    #   \x1b[>c       Secondary DA
-    #   \x1b[>q       XTVERSION
-    #   \x1b[?...n    DECRPM
-    # The host terminal (VSCode xterm.js) responds via stdin:
-    #   \x1b[?61;...c       Primary DA response
-    #   \x1b[>...c          Secondary DA response
-    #   \x1bP>|...\x1b\\    XTVERSION DCS response
-    #   \x1b[?...;...$y     DECRPM response
-    # We must parse and discard these, NOT forward to PTY.
+    # ── Console raw mode for ReadConsoleInputW ──
+    h_in = kernel32.GetStdHandle(STD_INPUT_HANDLE)
+    old_mode = wt.DWORD()
+    kernel32.GetConsoleMode(h_in, ctypes.byref(old_mode))
+    kernel32.SetConsoleMode(h_in, 0)
 
-    def _drain_escape(first_after_esc: str) -> str | None:
-        """After reading ESC + one char, consume the full terminal response
-        sequence if it matches known patterns. Returns None if consumed
-        (terminal response), or the raw string to forward if it's a
-        user-initiated ESC sequence we don't recognize as a response."""
-
-        buf = first_after_esc
-
-        if first_after_esc == "[":
-            # CSI sequence: \x1b[ ... <letter>
-            # Read until we get a final byte (0x40-0x7E)
-            while msvcrt.kbhit():
-                ch = msvcrt.getwch()
-                buf += ch
-                if "\x40" <= ch <= "\x7e":  # @ through ~
-                    break
-            # Check if this is a terminal response
-            # DA response: ends with 'c'  (\x1b[?...c or \x1b[>...c)
-            # DECRPM: ends with 'y' and contains '$'  (\x1b[?...;...$y)
-            # DSR: ends with 'n'
-            if buf.endswith("c") or buf.endswith("y") or buf.endswith("n"):
-                return None  # Terminal response → discard
-            # Not a response — could be user pressing Alt+[ or similar
-            return "\x1b" + buf
-
-        elif first_after_esc == "P":
-            # DCS sequence: \x1bP ... \x1b\\  (ST = String Terminator)
-            # This is XTVERSION response: \x1bP>|xterm.js(...)\x1b\\
-            # Read until ST (\x1b\\) or timeout
-            deadline = time.monotonic() + 0.5
-            while time.monotonic() < deadline:
-                if msvcrt.kbhit():
-                    ch = msvcrt.getwch()
-                    buf += ch
-                    # Check for ST: the char before this was \x1b and this is \\
-                    if len(buf) >= 2 and buf[-2] == "\x1b" and buf[-1] == "\\":
-                        return None  # DCS response complete → discard
-                else:
-                    time.sleep(0.005)
-            # Timeout — discard partial DCS anyway (it's not user input)
-            return None
-
-        elif first_after_esc == "]":
-            # OSC sequence: \x1b] ... (BEL or ST)
-            deadline = time.monotonic() + 0.5
-            while time.monotonic() < deadline:
-                if msvcrt.kbhit():
-                    ch = msvcrt.getwch()
-                    buf += ch
-                    if ch == "\x07":  # BEL terminator
-                        return None
-                    if len(buf) >= 2 and buf[-2] == "\x1b" and buf[-1] == "\\":
-                        return None  # ST terminator
-                else:
-                    time.sleep(0.005)
-            return None
-
-        else:
-            # Unknown ESC + char — probably user pressing Alt+key
-            return "\x1b" + buf
-
-    # ── Initial drain (brief, for early responses) ──
-    drain_end = time.monotonic() + 2.0
+    # ── DA drain ──
+    drain_end = time.monotonic() + 1.0
     while time.monotonic() < drain_end:
-        if msvcrt.kbhit():
-            ch = msvcrt.getwch()
-            if ch == "\x1b" and msvcrt.kbhit():
-                _drain_escape(msvcrt.getwch())  # Consume response
-            # else: discard stray chars during startup
-        time.sleep(0.02)
+        avail = wt.DWORD()
+        kernel32.GetNumberOfConsoleInputEvents(h_in, ctypes.byref(avail))
+        if avail.value > 0:
+            _read_console_input(h_in)
+        else:
+            time.sleep(0.02)
 
-    # ── stdin → PTY ──
+    # ── stdin → PTY (ReadConsoleInputW for IME support) ──
+    #
+    # IME flow:
+    #   VK_PROCESSKEY (0xE5) → IME is composing → skip
+    #   vk=0x0000            → IME confirmed Korean → forward to PTY
+    #   vk != 0              → English/special keys → forward normally
+
     try:
         while not stop.is_set() and proc.isalive():
-            if not msvcrt.kbhit():
+            avail = wt.DWORD()
+            kernel32.GetNumberOfConsoleInputEvents(h_in, ctypes.byref(avail))
+            if avail.value == 0:
                 time.sleep(0.01)
                 continue
 
-            ch = msvcrt.getwch()
+            ch, vk = _read_console_input(h_in)
 
-            if ch in ("\r", "\n"):
-                proc.write("\r")
-            elif ch in ("\x00", "\xe0"):
-                key = msvcrt.getwch()
-                ansi = _SPECIAL_KEYS.get(key, "")
-                if ansi:
-                    proc.write(ansi)
-            elif ch == "\t":
-                proc.write("\t")
-            elif ch == "\x1b":
-                # ESC received — is this a terminal response or user input?
-                if msvcrt.kbhit():
-                    next_ch = msvcrt.getwch()
-                    result = _drain_escape(next_ch)
-                    if result is not None:
-                        # Not a terminal response — forward to PTY
-                        proc.write(result)
-                    # else: terminal response consumed and discarded
-                else:
-                    # Bare ESC with nothing following — user pressed Escape
-                    proc.write("\x1b")
-            else:
+            # Ctrl+C
+            if ch == "\x03":
+                now = time.monotonic()
+                if now - last_sigint[0] < 1.0:
+                    break
+                last_sigint[0] = now
+                proc.write("\x03")
+                continue
+
+            # IME processed key — skip (한글 확정 이벤트가 뒤따름)
+            if vk == VK_PROCESSKEY:
+                continue
+
+            # IME confirmed Korean character (vk=0x0000)
+            if ch and vk == 0x0000:
                 proc.write(ch)
+                continue
+
+            # Special keys (arrows, home, end, etc.)
+            if ch is None and vk in _SPECIAL_VK:
+                proc.write(_SPECIAL_VK[vk])
+                continue
+
+            # Regular character (English, numbers, punctuation, control chars)
+            if ch:
+                if ch in ("\r", "\n"):
+                    proc.write("\r")
+                elif ch == "\t":
+                    proc.write("\t")
+                elif ch == "\x1b":
+                    proc.write("\x1b")
+                else:
+                    proc.write(ch)
+
     except KeyboardInterrupt:
         pass
     finally:
+        kernel32.SetConsoleMode(h_in, old_mode)
         signal.signal(signal.SIGINT, prev_handler)
         stop.set()
         if proc.isalive():
