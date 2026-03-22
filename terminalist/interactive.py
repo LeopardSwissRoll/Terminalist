@@ -274,122 +274,152 @@ def main() -> None:
                 time.sleep(0.01)
                 continue
 
-            ch, vk, ctrl, repeat = _read_console_input(h_in)
-            input_count += 1
-
-            # ── IME processed key — log detail then skip ──
-            if vk == VK_PROCESSKEY:
-                log("key", f"#{input_count} VK_PROCESSKEY ch={ch!r} repeat={repeat} (skip)")
-                continue
-
-            # ── IME confirmed (vk=0x0000) ──
-            # DA responses also arrive as vk=0x0000 one char at a time.
-            # Filter: if char is part of an ESC sequence, accumulate and discard.
-            if ch and vk == 0x0000:
-                if ch == "\x1b" or _da_buf is not None:
-                    # Start or continue DA response accumulation
-                    if ch == "\x1b":
-                        _da_buf = ch
-                    else:
-                        _da_buf += ch
-                    # Check if complete: ends with letter in CSI final range
-                    if len(_da_buf) >= 3 and _da_buf[1] == "[" and "\x40" <= _da_buf[-1] <= "\x7e":
-                        log("input", f"#{input_count} DA response filtered: {_da_buf!r}")
-                        _da_buf = None
-                    elif len(_da_buf) > 50:
-                        # Safety: discard overlong sequences
-                        log("input", f"#{input_count} DA buffer overflow, discarding: {_da_buf!r:.50}")
-                        _da_buf = None
-                    continue
-                # Real IME confirmed character (Korean, etc.)
-                session.write_raw(ch)
-                log("key", f"#{input_count} IME confirmed: {ch!r} (U+{ord(ch):04X}) repeat={repeat}")
-                continue
-
-            # ── Ctrl+C → always forward to PTY (no double-exit) ──
-            # Exit is now Ctrl+B → Ctrl+C (tmux style), handled below.
-            if ch == "\x03":
-                session.write_raw("\x03")
-                log("key", f"#{input_count} Ctrl+C → PTY")
-                continue
-
-            # ── Ctrl+B (prefix key) → tmux-style exit sequence ──
-            if ch == "\x02":
-                log("key", f"#{input_count} PREFIX (Ctrl+B) — waiting for next key...")
-                # Wait up to 2s for next key
-                prefix_deadline = time.monotonic() + 2.0
-                while time.monotonic() < prefix_deadline:
-                    avail2 = wt.DWORD()
-                    kernel32.GetNumberOfConsoleInputEvents(h_in, ctypes.byref(avail2))
-                    if avail2.value > 0:
-                        break
-                    time.sleep(0.01)
-                else:
-                    # Timeout — send literal Ctrl+B
-                    session.write_raw("\x02")
-                    log("key", f"#{input_count} PREFIX timeout → send literal Ctrl+B")
-                    continue
-                ch2, vk2, ctrl2, repeat2 = _read_console_input(h_in)
-                if ch2 == "\x03":
-                    log("app", "PREFIX → Ctrl+C → exiting")
+            # ── Batch read: read ALL available events at once ──
+            events: list[tuple[str | None, int, int, int]] = []
+            while True:
+                avail2 = wt.DWORD()
+                kernel32.GetNumberOfConsoleInputEvents(h_in, ctypes.byref(avail2))
+                if avail2.value == 0:
                     break
-                elif ch2 == "\x02":
-                    # Ctrl+B twice → send literal Ctrl+B to PTY
-                    session.write_raw("\x02")
-                    log("key", f"#{input_count} PREFIX → Ctrl+B → send literal")
+                events.append(_read_console_input(h_in))
+                # Safety limit — don't read forever
+                if len(events) >= 4096:
+                    break
+
+            # ── Paste detection (prompt-toolkit heuristic) ──
+            # If batch has text chars AND newlines → paste.
+            # Merge into single write for speed + correct behavior.
+            text_chars = []
+            has_newline = False
+            has_text = False
+            is_pure_text = True  # all events are printable/newline (no special keys)
+            for ch, vk, ctrl, repeat in events:
+                if vk == VK_PROCESSKEY:
+                    continue
+                if ch and vk == 0x0000 and ch != "\x1b":
+                    # IME confirmed — treat as text
+                    text_chars.append(ch)
+                    has_text = True
+                elif ch and ch in ("\r", "\n"):
+                    text_chars.append(ch)
+                    has_newline = True
+                elif ch and ord(ch) >= 0x20:
+                    text_chars.append(ch)
+                    has_text = True
                 else:
-                    log("key", f"#{input_count} PREFIX → {ch2!r} vk=0x{vk2:04X} (unbound, dropped)")
-                continue
-                session.write_raw("\x03")
-                log("key", f"#{input_count} Ctrl+C → PTY")
+                    is_pure_text = False
+
+            if has_newline and has_text and is_pure_text and len(text_chars) > 2:
+                # ── PASTE detected ──
+                paste_text = "".join(text_chars)
+                # Normalize newlines: \r\n → \r, lone \n → \r
+                paste_text = paste_text.replace("\r\n", "\r").replace("\n", "\r")
+                session.write_raw(paste_text)
+                input_count += len(events)
+                log("key", f"#{input_count} PASTE detected ({len(paste_text)} chars, {len(events)} events)")
                 continue
 
-            # ── Special keys (arrows, home, end, etc.) ──
-            if ch is None and vk in _SPECIAL_VK:
-                ansi = _SPECIAL_VK[vk]
-                session.write_raw(ansi)
-                log("key", f"#{input_count} special: vk=0x{vk:04X} → {ansi!r} repeat={repeat}")
-                continue
+            # ── Process events one by one (normal typing) ──
+            for ch, vk, ctrl, repeat in events:
+                input_count += 1
 
-            # ── Regular character ──
-            if ch:
-                if ch in ("\r", "\n"):
-                    # Check Shift via GetAsyncKeyState (dwControlKeyState unreliable in raw mode)
-                    # GetAsyncKeyState is in user32, not kernel32
-                    VK_SHIFT = 0x10
-                    user32 = ctypes.windll.user32
-                    shift_held = bool(user32.GetAsyncKeyState(VK_SHIFT) & 0x8000)
-                    if shift_held:
-                        # Shift+Enter → CSI u sequence for modern terminals
-                        # Claude CLI expects \x1b[13;2u for Shift+Enter
-                        session.write_raw("\x1b[13;2u")
-                        log("key", f"#{input_count} Shift+Enter → CSI u (\\x1b[13;2u)")
+                # IME processed key — skip
+                if vk == VK_PROCESSKEY:
+                    log("key", f"#{input_count} VK_PROCESSKEY ch={ch!r} repeat={repeat} (skip)")
+                    continue
+
+                # IME confirmed (vk=0x0000) — DA filter + Korean
+                if ch and vk == 0x0000:
+                    if ch == "\x1b" or _da_buf is not None:
+                        if ch == "\x1b":
+                            _da_buf = ch
+                        else:
+                            _da_buf += ch
+                        if len(_da_buf) >= 3 and _da_buf[1] == "[" and "\x40" <= _da_buf[-1] <= "\x7e":
+                            log("input", f"#{input_count} DA response filtered: {_da_buf!r}")
+                            _da_buf = None
+                        elif len(_da_buf) > 50:
+                            log("input", f"#{input_count} DA buffer overflow, discarding: {_da_buf!r:.50}")
+                            _da_buf = None
+                        continue
+                    session.write_raw(ch)
+                    log("key", f"#{input_count} IME confirmed: {ch!r} (U+{ord(ch):04X}) repeat={repeat}")
+                    continue
+
+                # Ctrl+C → always forward to PTY
+                if ch == "\x03":
+                    session.write_raw("\x03")
+                    log("key", f"#{input_count} Ctrl+C → PTY")
+                    continue
+
+                # Ctrl+B (prefix key) → tmux-style exit
+                if ch == "\x02":
+                    log("key", f"#{input_count} PREFIX (Ctrl+B) — waiting for next key...")
+                    prefix_deadline = time.monotonic() + 2.0
+                    while time.monotonic() < prefix_deadline:
+                        avail3 = wt.DWORD()
+                        kernel32.GetNumberOfConsoleInputEvents(h_in, ctypes.byref(avail3))
+                        if avail3.value > 0:
+                            break
+                        time.sleep(0.01)
                     else:
-                        session.write_raw("\r")
-                        log("key", f"#{input_count} Enter")
-                elif ch == "\t":
-                    session.write_raw("\t")
-                    log("key", f"#{input_count} Tab")
-                elif ch == "\x1b":
-                    session.write_raw("\x1b")
-                    log("key", f"#{input_count} Escape")
-                elif ch == "\x08":
-                    # Backspace: send \x7f (DEL) instead of \x08 (BS).
-                    # Most VT100 terminals send DEL for backspace.
-                    # PSReadLine treats \x08 as "undo group" but \x7f as "delete char".
-                    session.write_raw("\x7f")
-                    log("key", f"#{input_count} Backspace (0x08→0x7F) repeat={repeat}")
-                elif ord(ch) < 0x20:
-                    session.write_raw(ch)
-                    log("key", f"#{input_count} control: 0x{ord(ch):02X} vk=0x{vk:04X} repeat={repeat}")
-                else:
-                    session.write_raw(ch)
-                    if input_count % 20 == 0:
-                        log("key", f"#{input_count} char: {ch!r}")
-                continue
+                        session.write_raw("\x02")
+                        log("key", f"#{input_count} PREFIX timeout → send literal Ctrl+B")
+                        continue
+                    ch2, vk2, ctrl2, repeat2 = _read_console_input(h_in)
+                    if ch2 == "\x03":
+                        log("app", "PREFIX → Ctrl+C → exiting")
+                        stop.set()
+                        break
+                    elif ch2 == "\x02":
+                        session.write_raw("\x02")
+                        log("key", f"#{input_count} PREFIX → Ctrl+B → send literal")
+                    else:
+                        log("key", f"#{input_count} PREFIX → {ch2!r} vk=0x{vk2:04X} (unbound, dropped)")
+                    continue
 
-            # ── Unhandled ──
-            log("key", f"#{input_count} unhandled: ch={ch!r} vk=0x{vk:04X} ctrl=0x{ctrl:08X} repeat={repeat}")
+                # Special keys (arrows, home, end, etc.)
+                if ch is None and vk in _SPECIAL_VK:
+                    ansi = _SPECIAL_VK[vk]
+                    session.write_raw(ansi)
+                    log("key", f"#{input_count} special: vk=0x{vk:04X} → {ansi!r} repeat={repeat}")
+                    continue
+
+                # Regular character
+                if ch:
+                    if ch in ("\r", "\n"):
+                        VK_SHIFT = 0x10
+                        user32 = ctypes.windll.user32
+                        shift_held = bool(user32.GetAsyncKeyState(VK_SHIFT) & 0x8000)
+                        if shift_held:
+                            session.write_raw("\x1b[13;2u")
+                            log("key", f"#{input_count} Shift+Enter → CSI u (\\x1b[13;2u)")
+                        else:
+                            session.write_raw("\r")
+                            log("key", f"#{input_count} Enter")
+                    elif ch == "\t":
+                        session.write_raw("\t")
+                        log("key", f"#{input_count} Tab")
+                    elif ch == "\x1b":
+                        session.write_raw("\x1b")
+                        log("key", f"#{input_count} Escape")
+                    elif ch == "\x08":
+                        session.write_raw("\x7f")
+                        log("key", f"#{input_count} Backspace (0x08→0x7F) repeat={repeat}")
+                    elif ord(ch) < 0x20:
+                        session.write_raw(ch)
+                        log("key", f"#{input_count} control: 0x{ord(ch):02X} vk=0x{vk:04X} repeat={repeat}")
+                    else:
+                        session.write_raw(ch)
+                        if input_count % 20 == 0:
+                            log("key", f"#{input_count} char: {ch!r}")
+                    continue
+
+                # Unhandled
+                log("key", f"#{input_count} unhandled: ch={ch!r} vk=0x{vk:04X} ctrl=0x{ctrl:08X} repeat={repeat}")
+
+            if stop.is_set():
+                break
 
     except Exception as e:
         log("app", f"INPUT LOOP CRASHED: {type(e).__name__}: {e}")
