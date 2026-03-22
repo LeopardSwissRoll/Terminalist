@@ -355,8 +355,10 @@ def main() -> None:
             if ch:
                 if ch in ("\r", "\n"):
                     # Check Shift via GetAsyncKeyState (dwControlKeyState unreliable in raw mode)
+                    # GetAsyncKeyState is in user32, not kernel32
                     VK_SHIFT = 0x10
-                    shift_held = bool(kernel32.GetAsyncKeyState(VK_SHIFT) & 0x8000)
+                    user32 = ctypes.windll.user32
+                    shift_held = bool(user32.GetAsyncKeyState(VK_SHIFT) & 0x8000)
                     if shift_held:
                         # Shift+Enter → CSI u sequence for modern terminals
                         # Claude CLI expects \x1b[13;2u for Shift+Enter
