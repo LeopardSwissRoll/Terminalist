@@ -121,7 +121,10 @@ class TerminalSession:
                     log("pty", f"[{self.session_id}] sent {exit_cmd!r}, waiting 1s")
                 except Exception:
                     pass
-                time.sleep(1.0)
+                try:
+                    time.sleep(1.0)
+                except KeyboardInterrupt:
+                    log("pty", f"[{self.session_id}] kill sleep interrupted by Ctrl+C")
             if self._backend.is_alive():
                 try:
                     self._backend.terminate()
