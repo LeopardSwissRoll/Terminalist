@@ -359,10 +359,10 @@ def main() -> None:
                         # Shift+Enter → newline (not execute)
                         # Claude CLI uses this for multi-line input
                         session.write_raw("\n")
-                        log("key", f"#{input_count} Shift+Enter (newline)")
+                        log("key", f"#{input_count} Shift+Enter (newline) ctrl=0x{ctrl:08X}")
                     else:
                         session.write_raw("\r")
-                        log("key", f"#{input_count} Enter")
+                        log("key", f"#{input_count} Enter ctrl=0x{ctrl:08X}")
                 elif ch == "\t":
                     session.write_raw("\t")
                     log("key", f"#{input_count} Tab")
