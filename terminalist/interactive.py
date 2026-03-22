@@ -33,14 +33,58 @@ from terminalist.vt100 import VT100_MAP
 
 # ── Windows terminal setup ──
 
+# Console mode flag names for logging
+_INPUT_MODE_FLAGS = {
+    0x0001: "ENABLE_PROCESSED_INPUT",
+    0x0002: "ENABLE_LINE_INPUT",
+    0x0004: "ENABLE_ECHO_INPUT",
+    0x0008: "ENABLE_WINDOW_INPUT",
+    0x0010: "ENABLE_MOUSE_INPUT",
+    0x0020: "ENABLE_INSERT_MODE",
+    0x0040: "ENABLE_QUICK_EDIT_MODE",
+    0x0080: "ENABLE_EXTENDED_FLAGS",
+    0x0100: "ENABLE_AUTO_POSITION",
+    0x0200: "ENABLE_VIRTUAL_TERMINAL_INPUT",
+}
+_OUTPUT_MODE_FLAGS = {
+    0x0001: "ENABLE_PROCESSED_OUTPUT",
+    0x0002: "ENABLE_WRAP_AT_EOL_OUTPUT",
+    0x0004: "ENABLE_VIRTUAL_TERMINAL_PROCESSING",
+    0x0008: "DISABLE_NEWLINE_AUTO_RETURN",
+    0x0010: "ENABLE_LVB_GRID_WORLDWIDE",
+}
+
+
+def _decode_flags(value: int, table: dict[int, str]) -> str:
+    names = [name for bit, name in sorted(table.items()) if value & bit]
+    return f"0x{value:04x} ({' | '.join(names)})" if names else f"0x{value:04x}"
+
+
 def _enable_vt() -> None:
-    """Enable ANSI escape processing on Windows stdout."""
+    """Enable ANSI escape processing on Windows stdout. Log all console modes."""
     import ctypes
     k32 = ctypes.windll.kernel32
-    h = k32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
-    mode = ctypes.c_ulong()
-    k32.GetConsoleMode(h, ctypes.byref(mode))
-    k32.SetConsoleMode(h, mode.value | 0x0004)  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+
+    # ── Log stdin mode ──
+    h_in = k32.GetStdHandle(-10)  # STD_INPUT_HANDLE
+    in_mode = ctypes.c_ulong()
+    k32.GetConsoleMode(h_in, ctypes.byref(in_mode))
+    log("ctx", f"stdin console mode BEFORE: {_decode_flags(in_mode.value, _INPUT_MODE_FLAGS)}")
+
+    # ── Log + set stdout mode ──
+    h_out = k32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+    out_mode = ctypes.c_ulong()
+    k32.GetConsoleMode(h_out, ctypes.byref(out_mode))
+    log("ctx", f"stdout console mode BEFORE: {_decode_flags(out_mode.value, _OUTPUT_MODE_FLAGS)}")
+    k32.SetConsoleMode(h_out, out_mode.value | 0x0004)  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    k32.GetConsoleMode(h_out, ctypes.byref(out_mode))
+    log("ctx", f"stdout console mode AFTER: {_decode_flags(out_mode.value, _OUTPUT_MODE_FLAGS)}")
+
+    # ── Check if VT input mode is on (changes how arrow keys arrive) ──
+    has_vt_input = bool(in_mode.value & 0x0200)
+    log("ctx", f"ENABLE_VIRTUAL_TERMINAL_INPUT={'ON' if has_vt_input else 'OFF'}")
+    if has_vt_input:
+        log("ctx", "WARNING: VT input mode ON — arrows come as ESC sequences, not \\xe0 prefix")
 
 
 def _enter_alt_screen() -> None:
@@ -258,7 +302,13 @@ def main() -> None:
                 log("key", f"#{input_count} Tab")
 
             elif ch == "\x1b":
-                # ESC — could be terminal response or user-pressed Escape
+                # ESC — could be terminal response, VT input sequence, or bare Escape.
+                # When ENABLE_VIRTUAL_TERMINAL_INPUT is ON (VSCode), arrow keys arrive
+                # as \x1b[A etc. via separate getwch() calls. kbhit() may not see the
+                # continuation yet, so we wait briefly before giving up.
+                deadline = time.monotonic() + 0.05  # 50ms window for continuation
+                while not msvcrt.kbhit() and time.monotonic() < deadline:
+                    time.sleep(0.002)
                 if msvcrt.kbhit():
                     next_ch = msvcrt.getwch()
                     result = _drain_escape(next_ch)
