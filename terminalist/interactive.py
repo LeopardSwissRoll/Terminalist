@@ -263,16 +263,11 @@ def main() -> None:
             break
         time.sleep(0.05)
     log("input", f"Shell state={session.state.value}, flushing input buffer...")
-    # Now flush all pending DA responses
-    drain_count = 0
-    while True:
-        avail = wt.DWORD()
-        kernel32.GetNumberOfConsoleInputEvents(h_in, ctypes.byref(avail))
-        if avail.value == 0:
-            break
-        _read_console_input(h_in)
-        drain_count += 1
-    log("input", f"DA flush complete ({drain_count} events discarded)")
+    # Flush ALL pending events (not just KEY_DOWN — mouse/focus events too).
+    # Using FlushConsoleInputBuffer instead of reading one-by-one,
+    # because _read_console_input blocks on non-key events.
+    kernel32.FlushConsoleInputBuffer(h_in)
+    log("input", "Input buffer flushed (FlushConsoleInputBuffer)")
 
     # ── Input loop: ReadConsoleInputW → PTY ──
     log("input", "Entering input loop (ReadConsoleInputW)")
