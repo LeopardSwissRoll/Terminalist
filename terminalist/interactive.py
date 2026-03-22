@@ -253,21 +253,10 @@ def main() -> None:
     kernel32.SetConsoleMode(h_in, 0)
     log("input", f"Console raw mode set (old=0x{old_mode.value:04x})")
 
-    # ── DA drain (1s) ──
-    # Simple time-based drain. First keystroke during this window gets eaten,
-    # but it's reliable and doesn't block on non-key events.
-    log("input", "Draining initial terminal responses (1s)...")
-    drain_end = time.monotonic() + 1.0
-    drain_count = 0
-    while time.monotonic() < drain_end:
-        avail = wt.DWORD()
-        kernel32.GetNumberOfConsoleInputEvents(h_in, ctypes.byref(avail))
-        if avail.value > 0:
-            _read_console_input(h_in)
-            drain_count += 1
-        else:
-            time.sleep(0.02)
-    log("input", f"DA drain complete ({drain_count} events consumed)")
+    # ── No time-based drain ──
+    # DA responses are filtered in the input loop (vk=0x0000 ESC sequence detection).
+    # No drain = no first-keystroke swallowing.
+    log("input", "No DA drain — DA filter handles stale responses in input loop")
 
     # ── Input loop: ReadConsoleInputW → PTY ──
     log("input", "Entering input loop (ReadConsoleInputW)")
