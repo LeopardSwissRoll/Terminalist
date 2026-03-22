@@ -146,35 +146,42 @@ def _terminal_size() -> tuple[int, int]:
         return 30, 120
 
 
-def _read_console_input(h_in: int) -> tuple[str | None, int, int, int]:
-    """Read one key-down event via ReadConsoleInputW.
+def _read_one_record(h_in: int) -> tuple[str | None, int, int, int] | None:
+    """Read one console input record. Returns None for non-KEY or KEY_UP events.
 
-    Returns (char_or_none, virtual_key_code, control_key_state, repeat_count).
-    Blocks until a KEY_DOWN event arrives.
+    Never blocks internally — reads exactly one record and returns.
+    Caller must check avail > 0 before calling.
     """
     record = INPUT_RECORD()
     read_count = wt.DWORD()
+    kernel32.ReadConsoleInputW(
+        h_in,
+        ctypes.byref(record),
+        1,
+        ctypes.byref(read_count),
+    )
+    if record.EventType != KEY_EVENT:
+        return None
+    ke = record.Event.KeyEvent
+    if not ke.bKeyDown:
+        return None
+    ch = ke.uChar
+    vk = ke.wVirtualKeyCode
+    ctrl = ke.dwControlKeyState
+    repeat = ke.wRepeatCount
+    return (ch if ch and ch != "\x00" else None, vk, ctrl, repeat)
 
+
+def _read_console_input(h_in: int) -> tuple[str | None, int, int, int]:
+    """Read one key-down event via ReadConsoleInputW.
+
+    Blocks until a KEY_DOWN event arrives (consumes non-key events).
+    Use _read_one_record() for non-blocking reads.
+    """
     while True:
-        kernel32.ReadConsoleInputW(
-            h_in,
-            ctypes.byref(record),
-            1,
-            ctypes.byref(read_count),
-        )
-        if record.EventType != KEY_EVENT:
-            continue
-        ke = record.Event.KeyEvent
-        if not ke.bKeyDown:
-            continue
-
-        ch = ke.uChar
-        vk = ke.wVirtualKeyCode
-        ctrl = ke.dwControlKeyState
-        repeat = ke.wRepeatCount
-        # '\x00' (NUL) means no character — treat as None
-        # This happens for special keys (arrows, F-keys, etc.)
-        return (ch if ch and ch != "\x00" else None, vk, ctrl, repeat)
+        result = _read_one_record(h_in)
+        if result is not None:
+            return result
 
 
 def parse_args() -> argparse.Namespace:
@@ -274,17 +281,23 @@ def main() -> None:
                 time.sleep(0.01)
                 continue
 
-            # ── Batch read: read ALL available events at once ──
+            # ── Batch read: read ALL available records at once ──
+            # Uses _read_one_record (non-blocking) to avoid hanging on
+            # non-KEY events (mouse, focus) that VSCode sends.
             events: list[tuple[str | None, int, int, int]] = []
             while True:
                 avail2 = wt.DWORD()
                 kernel32.GetNumberOfConsoleInputEvents(h_in, ctypes.byref(avail2))
                 if avail2.value == 0:
                     break
-                events.append(_read_console_input(h_in))
-                # Safety limit — don't read forever
+                result = _read_one_record(h_in)
+                if result is not None:
+                    events.append(result)
                 if len(events) >= 4096:
                     break
+
+            if not events:
+                continue
 
             # ── Paste detection (prompt-toolkit heuristic) ──
             # If batch has text chars AND newlines → paste.
