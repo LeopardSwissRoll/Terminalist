@@ -253,21 +253,21 @@ def main() -> None:
     kernel32.SetConsoleMode(h_in, 0)
     log("input", f"Console raw mode set (old=0x{old_mode.value:04x})")
 
-    # ── Wait for shell ready, then flush DA garbage ──
-    # Instead of time-based drain (which can eat real keypresses),
-    # wait for the shell prompt to appear, then flush whatever's in the buffer.
-    log("input", "Waiting for shell ready before accepting input...")
-    ready_deadline = time.monotonic() + 10.0
-    while time.monotonic() < ready_deadline:
-        if session.state.value == "ready":
-            break
-        time.sleep(0.05)
-    log("input", f"Shell state={session.state.value}, flushing input buffer...")
-    # Flush ALL pending events (not just KEY_DOWN — mouse/focus events too).
-    # Using FlushConsoleInputBuffer instead of reading one-by-one,
-    # because _read_console_input blocks on non-key events.
-    kernel32.FlushConsoleInputBuffer(h_in)
-    log("input", "Input buffer flushed (FlushConsoleInputBuffer)")
+    # ── DA drain (1s) ──
+    # Simple time-based drain. First keystroke during this window gets eaten,
+    # but it's reliable and doesn't block on non-key events.
+    log("input", "Draining initial terminal responses (1s)...")
+    drain_end = time.monotonic() + 1.0
+    drain_count = 0
+    while time.monotonic() < drain_end:
+        avail = wt.DWORD()
+        kernel32.GetNumberOfConsoleInputEvents(h_in, ctypes.byref(avail))
+        if avail.value > 0:
+            _read_console_input(h_in)
+            drain_count += 1
+        else:
+            time.sleep(0.02)
+    log("input", f"DA drain complete ({drain_count} events consumed)")
 
     # ── Input loop: ReadConsoleInputW → PTY ──
     log("input", "Entering input loop (ReadConsoleInputW)")
