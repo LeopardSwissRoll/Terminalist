@@ -2,7 +2,7 @@
 
 Spawns one ShellSession and bridges it to the current terminal:
   PTY output → stdout (raw passthrough via _on_raw_output tap)
-  stdin → PTY (msvcrt input, same pattern as fakeTerm.py)
+  stdin → PTY (ReadConsoleInputW for proper Korean IME support)
   pyte + state machine run in the background (for state tracking)
 
 Usage:
@@ -15,7 +15,8 @@ Detach: Ctrl+C twice within 1 second.
 from __future__ import annotations
 
 import argparse
-import msvcrt
+import ctypes
+import ctypes.wintypes as wt
 import os
 import signal
 import sys
@@ -28,30 +29,58 @@ from terminalist.debug import init_debug, log, detect_env
 from terminalist.pyte_patch import apply as patch_pyte
 from terminalist.core.shell_session import ShellSession
 from terminalist.core.terminal_session import SessionState
-from terminalist.vt100 import VT100_MAP
+
+# ── Windows Console API ──
+
+kernel32 = ctypes.windll.kernel32
+
+STD_INPUT_HANDLE = -10
+STD_OUTPUT_HANDLE = -11
+KEY_EVENT = 0x0001
+ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+VK_PROCESSKEY = 0xE5  # IME intercepted this key
 
 
-# ── Windows terminal setup ──
+class KEY_EVENT_RECORD(ctypes.Structure):
+    _fields_ = [
+        ("bKeyDown", wt.BOOL),
+        ("wRepeatCount", wt.WORD),
+        ("wVirtualKeyCode", wt.WORD),
+        ("wVirtualScanCode", wt.WORD),
+        ("uChar", wt.WCHAR),
+        ("dwControlKeyState", wt.DWORD),
+    ]
 
-# Console mode flag names for logging
+
+class INPUT_RECORD_UNION(ctypes.Union):
+    _fields_ = [("KeyEvent", KEY_EVENT_RECORD)]
+
+
+class INPUT_RECORD(ctypes.Structure):
+    _fields_ = [
+        ("EventType", wt.WORD),
+        ("Event", INPUT_RECORD_UNION),
+    ]
+
+
+# ── Console mode flag names for logging ──
+
 _INPUT_MODE_FLAGS = {
-    0x0001: "ENABLE_PROCESSED_INPUT",
-    0x0002: "ENABLE_LINE_INPUT",
-    0x0004: "ENABLE_ECHO_INPUT",
-    0x0008: "ENABLE_WINDOW_INPUT",
-    0x0010: "ENABLE_MOUSE_INPUT",
-    0x0020: "ENABLE_INSERT_MODE",
-    0x0040: "ENABLE_QUICK_EDIT_MODE",
-    0x0080: "ENABLE_EXTENDED_FLAGS",
-    0x0100: "ENABLE_AUTO_POSITION",
-    0x0200: "ENABLE_VIRTUAL_TERMINAL_INPUT",
+    0x0001: "PROCESSED_INPUT",
+    0x0002: "LINE_INPUT",
+    0x0004: "ECHO_INPUT",
+    0x0008: "WINDOW_INPUT",
+    0x0010: "MOUSE_INPUT",
+    0x0020: "INSERT_MODE",
+    0x0040: "QUICK_EDIT",
+    0x0080: "EXTENDED_FLAGS",
+    0x0200: "VT_INPUT",
 }
 _OUTPUT_MODE_FLAGS = {
-    0x0001: "ENABLE_PROCESSED_OUTPUT",
-    0x0002: "ENABLE_WRAP_AT_EOL_OUTPUT",
-    0x0004: "ENABLE_VIRTUAL_TERMINAL_PROCESSING",
+    0x0001: "PROCESSED_OUTPUT",
+    0x0002: "WRAP_AT_EOL",
+    0x0004: "VT_PROCESSING",
     0x0008: "DISABLE_NEWLINE_AUTO_RETURN",
-    0x0010: "ENABLE_LVB_GRID_WORLDWIDE",
 }
 
 
@@ -60,117 +89,52 @@ def _decode_flags(value: int, table: dict[int, str]) -> str:
     return f"0x{value:04x} ({' | '.join(names)})" if names else f"0x{value:04x}"
 
 
+# ── Special key VK → ANSI ──
+
+_SPECIAL_VK = {
+    0x26: "\x1b[A",   # VK_UP
+    0x28: "\x1b[B",   # VK_DOWN
+    0x27: "\x1b[C",   # VK_RIGHT
+    0x25: "\x1b[D",   # VK_LEFT
+    0x24: "\x1b[H",   # VK_HOME
+    0x23: "\x1b[F",   # VK_END
+    0x21: "\x1b[5~",  # VK_PRIOR (Page Up)
+    0x22: "\x1b[6~",  # VK_NEXT (Page Down)
+    0x2E: "\x1b[3~",  # VK_DELETE
+    0x2D: "\x1b[2~",  # VK_INSERT
+}
+
+
+# ── Windows terminal setup ──
+
 def _enable_vt() -> None:
     """Enable ANSI escape processing on Windows stdout. Log all console modes."""
-    import ctypes
-    k32 = ctypes.windll.kernel32
-
     # ── Log stdin mode ──
-    h_in = k32.GetStdHandle(-10)  # STD_INPUT_HANDLE
+    h_in = kernel32.GetStdHandle(STD_INPUT_HANDLE)
     in_mode = ctypes.c_ulong()
-    k32.GetConsoleMode(h_in, ctypes.byref(in_mode))
-    log("ctx", f"stdin console mode BEFORE: {_decode_flags(in_mode.value, _INPUT_MODE_FLAGS)}")
+    kernel32.GetConsoleMode(h_in, ctypes.byref(in_mode))
+    log("ctx", f"stdin console mode: {_decode_flags(in_mode.value, _INPUT_MODE_FLAGS)}")
 
     # ── Log + set stdout mode ──
-    h_out = k32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+    h_out = kernel32.GetStdHandle(STD_OUTPUT_HANDLE)
     out_mode = ctypes.c_ulong()
-    k32.GetConsoleMode(h_out, ctypes.byref(out_mode))
+    kernel32.GetConsoleMode(h_out, ctypes.byref(out_mode))
     log("ctx", f"stdout console mode BEFORE: {_decode_flags(out_mode.value, _OUTPUT_MODE_FLAGS)}")
-    k32.SetConsoleMode(h_out, out_mode.value | 0x0004)  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
-    k32.GetConsoleMode(h_out, ctypes.byref(out_mode))
+    kernel32.SetConsoleMode(h_out, out_mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING)
+    kernel32.GetConsoleMode(h_out, ctypes.byref(out_mode))
     log("ctx", f"stdout console mode AFTER: {_decode_flags(out_mode.value, _OUTPUT_MODE_FLAGS)}")
-
-    # ── Check if VT input mode is on (changes how arrow keys arrive) ──
-    has_vt_input = bool(in_mode.value & 0x0200)
-    log("ctx", f"ENABLE_VIRTUAL_TERMINAL_INPUT={'ON' if has_vt_input else 'OFF'}")
-    if has_vt_input:
-        log("ctx", "WARNING: VT input mode ON — arrows come as ESC sequences, not \\xe0 prefix")
 
 
 def _enter_alt_screen() -> None:
-    """Enter alternate screen buffer + hide cursor."""
-    sys.stdout.write("\x1b[?1049h")  # alt screen
-    sys.stdout.write("\x1b[H")       # cursor home
-    sys.stdout.write("\x1b[2J")      # clear screen
+    sys.stdout.write("\x1b[?1049h\x1b[H\x1b[2J")
     sys.stdout.flush()
     log("app", "Entered alt screen")
 
 
 def _exit_alt_screen() -> None:
-    """Exit alternate screen buffer + show cursor."""
-    sys.stdout.write("\x1b[?1049l")  # exit alt screen
+    sys.stdout.write("\x1b[?1049l")
     sys.stdout.flush()
     log("app", "Exited alt screen")
-
-
-# ── Special key mapping (msvcrt → ANSI, same as fakeTerm.py) ──
-
-_SPECIAL_KEYS = {
-    "H": "\x1b[A",   # Up
-    "P": "\x1b[B",   # Down
-    "M": "\x1b[C",   # Right
-    "K": "\x1b[D",   # Left
-    "G": "\x1b[H",   # Home
-    "O": "\x1b[F",   # End
-    "I": "\x1b[5~",  # Page Up
-    "Q": "\x1b[6~",  # Page Down
-    "S": "\x1b[3~",  # Delete
-    "R": "\x1b[2~",  # Insert
-}
-
-
-# ── DA drain (terminal response filter, from fakeTerm.py) ──
-
-def _drain_escape(first_after_esc: str) -> str | None:
-    """Consume terminal response sequences. Returns None if consumed."""
-    buf = first_after_esc
-
-    if first_after_esc == "[":
-        while msvcrt.kbhit():
-            ch = msvcrt.getwch()
-            buf += ch
-            if "\x40" <= ch <= "\x7e":
-                break
-        if buf.endswith("c") or buf.endswith("y") or buf.endswith("n"):
-            log("input", f"DA response consumed: ESC{buf!r}")
-            return None
-        log("input", f"ESC sequence forwarded: ESC{buf!r}")
-        return "\x1b" + buf
-
-    elif first_after_esc == "P":
-        deadline = time.monotonic() + 0.5
-        while time.monotonic() < deadline:
-            if msvcrt.kbhit():
-                ch = msvcrt.getwch()
-                buf += ch
-                if len(buf) >= 2 and buf[-2] == "\x1b" and buf[-1] == "\\":
-                    log("input", f"DCS response consumed ({len(buf)} chars)")
-                    return None
-            else:
-                time.sleep(0.005)
-        log("input", f"DCS response timeout ({len(buf)} chars)")
-        return None
-
-    elif first_after_esc == "]":
-        deadline = time.monotonic() + 0.5
-        while time.monotonic() < deadline:
-            if msvcrt.kbhit():
-                ch = msvcrt.getwch()
-                buf += ch
-                if ch == "\x07":
-                    log("input", f"OSC response consumed (BEL)")
-                    return None
-                if len(buf) >= 2 and buf[-2] == "\x1b" and buf[-1] == "\\":
-                    log("input", f"OSC response consumed (ST)")
-                    return None
-            else:
-                time.sleep(0.005)
-        log("input", f"OSC response timeout ({len(buf)} chars)")
-        return None
-
-    else:
-        log("input", f"Unknown ESC+{first_after_esc!r} forwarded")
-        return "\x1b" + buf
 
 
 def _terminal_size() -> tuple[int, int]:
@@ -180,6 +144,34 @@ def _terminal_size() -> tuple[int, int]:
         return max(rows, 10), max(cols, 40)
     except OSError:
         return 30, 120
+
+
+def _read_console_input(h_in: int) -> tuple[str | None, int, int]:
+    """Read one key-down event via ReadConsoleInputW.
+
+    Returns (char_or_none, virtual_key_code, control_key_state).
+    Blocks until a KEY_DOWN event arrives.
+    """
+    record = INPUT_RECORD()
+    read_count = wt.DWORD()
+
+    while True:
+        kernel32.ReadConsoleInputW(
+            h_in,
+            ctypes.byref(record),
+            1,
+            ctypes.byref(read_count),
+        )
+        if record.EventType != KEY_EVENT:
+            continue
+        ke = record.Event.KeyEvent
+        if not ke.bKeyDown:
+            continue
+
+        ch = ke.uChar
+        vk = ke.wVirtualKeyCode
+        ctrl = ke.dwControlKeyState
+        return (ch if ch else None, vk, ctrl)
 
 
 def parse_args() -> argparse.Namespace:
@@ -201,7 +193,7 @@ def main() -> None:
 
     log("app", f"=== Interactive shell starting (env={env}, {cols}x{rows}) ===")
 
-    # ── Alt screen (prevent overwriting host terminal content) ──
+    # ── Alt screen ──
     _enter_alt_screen()
 
     # ── Spawn session ──
@@ -213,7 +205,6 @@ def main() -> None:
         rows=rows,
     )
 
-    # Raw output tap → stdout
     def on_raw_output(data: str) -> None:
         try:
             sys.stdout.write(data)
@@ -254,100 +245,105 @@ def main() -> None:
             session.resize(cols=new[1], rows=new[0])
             log("app", f"Resize detected: {new[1]}x{new[0]}")
 
-    # ── Initial DA drain ──
-    log("input", "Draining initial terminal responses (2s)...")
-    drain_end = time.monotonic() + 2.0
+    # ── Console input handle + raw mode ──
+    h_in = kernel32.GetStdHandle(STD_INPUT_HANDLE)
+    old_mode = wt.DWORD()
+    kernel32.GetConsoleMode(h_in, ctypes.byref(old_mode))
+    # Disable line input + echo (raw mode for ReadConsoleInputW)
+    kernel32.SetConsoleMode(h_in, 0)
+    log("input", f"Console raw mode set (old=0x{old_mode.value:04x})")
+
+    # ── DA drain ──
+    log("input", "Draining initial terminal responses (3s)...")
+    drain_end = time.monotonic() + 3.0
     drain_count = 0
     while time.monotonic() < drain_end:
-        if msvcrt.kbhit():
-            ch = msvcrt.getwch()
+        avail = wt.DWORD()
+        kernel32.GetNumberOfConsoleInputEvents(h_in, ctypes.byref(avail))
+        if avail.value > 0:
+            _read_console_input(h_in)
             drain_count += 1
-            if ch == "\x1b" and msvcrt.kbhit():
-                _drain_escape(msvcrt.getwch())
-            else:
-                log("input", f"Drain: discarded char {ch!r} (0x{ord(ch):04x})")
-        time.sleep(0.02)
-    log("input", f"DA drain complete ({drain_count} chars consumed)")
+        else:
+            time.sleep(0.02)
+    log("input", f"DA drain complete ({drain_count} events consumed)")
 
-    # ── Input loop: stdin → PTY ──
-    log("input", "Entering input loop")
+    # ── Input loop: ReadConsoleInputW → PTY ──
+    log("input", "Entering input loop (ReadConsoleInputW)")
     input_count = 0
     try:
         while not stop.is_set() and session._backend.is_alive():
             check_resize()
 
-            if not msvcrt.kbhit():
+            # Non-blocking peek
+            avail = wt.DWORD()
+            kernel32.GetNumberOfConsoleInputEvents(h_in, ctypes.byref(avail))
+            if avail.value == 0:
                 time.sleep(0.01)
                 continue
 
-            ch = msvcrt.getwch()
+            ch, vk, ctrl = _read_console_input(h_in)
             input_count += 1
 
-            if ch in ("\r", "\n"):
-                session.write_raw("\r")
-                log("key", f"#{input_count} Enter")
+            # ── IME processed key → skip (확정 이벤트가 뒤따름) ──
+            if vk == VK_PROCESSKEY:
+                log("key", f"#{input_count} VK_PROCESSKEY (IME composing, skip)")
+                continue
 
-            elif ch in ("\x00", "\xe0"):
-                # Special key prefix — read the scan code
-                key = msvcrt.getwch()
-                ansi = _SPECIAL_KEYS.get(key, "")
-                if ansi:
-                    session.write_raw(ansi)
-                    log("key", f"#{input_count} special: prefix={ch!r} scan={key!r} → {ansi!r}")
-                else:
-                    log("key", f"#{input_count} special: prefix={ch!r} scan={key!r} → UNMAPPED (dropped)")
+            # ── IME confirmed Korean (vk=0x0000) → forward ──
+            if ch and vk == 0x0000:
+                session.write_raw(ch)
+                log("key", f"#{input_count} IME confirmed: {ch!r} (U+{ord(ch):04X})")
+                continue
 
-            elif ch == "\t":
-                session.write_raw("\t")
-                log("key", f"#{input_count} Tab")
+            # ── Ctrl+C ──
+            if ch == "\x03":
+                now = time.monotonic()
+                if now - last_sigint[0] < 1.0:
+                    log("app", "Double Ctrl+C in input loop → exiting")
+                    break
+                last_sigint[0] = now
+                session.write_raw("\x03")
+                log("key", f"#{input_count} Ctrl+C → PTY")
+                continue
 
-            elif ch == "\x1b":
-                # ESC — could be terminal response, VT input sequence, or bare Escape.
-                # When ENABLE_VIRTUAL_TERMINAL_INPUT is ON (VSCode), arrow keys arrive
-                # as \x1b[A etc. via separate getwch() calls. kbhit() may not see the
-                # continuation yet, so we wait briefly before giving up.
-                deadline = time.monotonic() + 0.05  # 50ms window for continuation
-                while not msvcrt.kbhit() and time.monotonic() < deadline:
-                    time.sleep(0.002)
-                if msvcrt.kbhit():
-                    next_ch = msvcrt.getwch()
-                    result = _drain_escape(next_ch)
-                    if result is not None:
-                        session.write_raw(result)
-                        log("key", f"#{input_count} ESC sequence forwarded: {result!r:.40}")
-                    else:
-                        log("key", f"#{input_count} ESC sequence consumed (DA response)")
-                else:
+            # ── Special keys (arrows, home, end, etc.) ──
+            if ch is None and vk in _SPECIAL_VK:
+                ansi = _SPECIAL_VK[vk]
+                session.write_raw(ansi)
+                log("key", f"#{input_count} special: vk=0x{vk:04X} → {ansi!r}")
+                continue
+
+            # ── Regular character ──
+            if ch:
+                if ch in ("\r", "\n"):
+                    session.write_raw("\r")
+                    log("key", f"#{input_count} Enter")
+                elif ch == "\t":
+                    session.write_raw("\t")
+                    log("key", f"#{input_count} Tab")
+                elif ch == "\x1b":
                     session.write_raw("\x1b")
-                    log("key", f"#{input_count} bare Escape")
+                    log("key", f"#{input_count} Escape")
+                elif ord(ch) < 0x20:
+                    session.write_raw(ch)
+                    log("key", f"#{input_count} control: 0x{ord(ch):02X}")
+                else:
+                    session.write_raw(ch)
+                    if input_count % 20 == 0:
+                        log("key", f"#{input_count} char: {ch!r}")
+                continue
 
-            elif ord(ch) < 0x20:
-                # Control character
-                session.write_raw(ch)
-                log("key", f"#{input_count} control: {ch!r} (0x{ord(ch):02x})")
-
-            elif ord(ch) >= 0xAC00:
-                # Korean syllable block (완성형 한글 U+AC00~U+D7A3)
-                session.write_raw(ch)
-                log("key", f"#{input_count} korean: {ch!r} (U+{ord(ch):04X})")
-
-            elif ord(ch) > 0x7F:
-                # Non-ASCII (CJK, emoji, etc.)
-                session.write_raw(ch)
-                log("key", f"#{input_count} unicode: {ch!r} (U+{ord(ch):04X})")
-
-            else:
-                # Printable ASCII
-                session.write_raw(ch)
-                # Log printable chars at lower frequency (every 10th, or if debug is very verbose)
-                if input_count % 10 == 0:
-                    log("key", f"#{input_count} char: {ch!r}")
+            # ── Unhandled ──
+            log("key", f"#{input_count} unhandled: ch={ch!r} vk=0x{vk:04X} ctrl=0x{ctrl:08X}")
 
     except Exception as e:
         log("app", f"INPUT LOOP CRASHED: {type(e).__name__}: {e}")
         log("app", traceback.format_exc())
         print(f"\n[terminalist] Input loop error: {e}", file=sys.stderr)
     finally:
+        # Restore console mode
+        kernel32.SetConsoleMode(h_in, old_mode)
+        log("input", f"Console mode restored (0x{old_mode.value:04x})")
         signal.signal(signal.SIGINT, prev_handler)
         stop.set()
 
