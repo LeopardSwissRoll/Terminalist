@@ -253,19 +253,26 @@ def main() -> None:
     kernel32.SetConsoleMode(h_in, 0)
     log("input", f"Console raw mode set (old=0x{old_mode.value:04x})")
 
-    # ── DA drain (1s — VSCode xterm.js sends DA responses slowly) ──
-    log("input", "Draining initial terminal responses (1s)...")
-    drain_end = time.monotonic() + 1.0
+    # ── Wait for shell ready, then flush DA garbage ──
+    # Instead of time-based drain (which can eat real keypresses),
+    # wait for the shell prompt to appear, then flush whatever's in the buffer.
+    log("input", "Waiting for shell ready before accepting input...")
+    ready_deadline = time.monotonic() + 10.0
+    while time.monotonic() < ready_deadline:
+        if session.state.value == "ready":
+            break
+        time.sleep(0.05)
+    log("input", f"Shell state={session.state.value}, flushing input buffer...")
+    # Now flush all pending DA responses
     drain_count = 0
-    while time.monotonic() < drain_end:
+    while True:
         avail = wt.DWORD()
         kernel32.GetNumberOfConsoleInputEvents(h_in, ctypes.byref(avail))
-        if avail.value > 0:
-            _read_console_input(h_in)
-            drain_count += 1
-        else:
-            time.sleep(0.02)
-    log("input", f"DA drain complete ({drain_count} events consumed)")
+        if avail.value == 0:
+            break
+        _read_console_input(h_in)
+        drain_count += 1
+    log("input", f"DA flush complete ({drain_count} events discarded)")
 
     # ── Input loop: ReadConsoleInputW → PTY ──
     log("input", "Entering input loop (ReadConsoleInputW)")
@@ -361,10 +368,17 @@ def main() -> None:
                 continue
 
             # ── Regular character ──
+            SHIFT_PRESSED = 0x0010
             if ch:
                 if ch in ("\r", "\n"):
-                    session.write_raw("\r")
-                    log("key", f"#{input_count} Enter")
+                    if ctrl & SHIFT_PRESSED:
+                        # Shift+Enter → newline (not execute)
+                        # Claude CLI uses this for multi-line input
+                        session.write_raw("\n")
+                        log("key", f"#{input_count} Shift+Enter (newline)")
+                    else:
+                        session.write_raw("\r")
+                        log("key", f"#{input_count} Enter")
                 elif ch == "\t":
                     session.write_raw("\t")
                     log("key", f"#{input_count} Tab")
