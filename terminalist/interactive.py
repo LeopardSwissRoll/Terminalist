@@ -352,17 +352,19 @@ def main() -> None:
                 continue
 
             # ── Regular character ──
-            SHIFT_PRESSED = 0x0010
             if ch:
                 if ch in ("\r", "\n"):
-                    if ctrl & SHIFT_PRESSED:
-                        # Shift+Enter → newline (not execute)
-                        # Claude CLI uses this for multi-line input
-                        session.write_raw("\n")
-                        log("key", f"#{input_count} Shift+Enter (newline) ctrl=0x{ctrl:08X}")
+                    # Check Shift via GetAsyncKeyState (dwControlKeyState unreliable in raw mode)
+                    VK_SHIFT = 0x10
+                    shift_held = bool(kernel32.GetAsyncKeyState(VK_SHIFT) & 0x8000)
+                    if shift_held:
+                        # Shift+Enter → CSI u sequence for modern terminals
+                        # Claude CLI expects \x1b[13;2u for Shift+Enter
+                        session.write_raw("\x1b[13;2u")
+                        log("key", f"#{input_count} Shift+Enter → CSI u (\\x1b[13;2u)")
                     else:
                         session.write_raw("\r")
-                        log("key", f"#{input_count} Enter ctrl=0x{ctrl:08X}")
+                        log("key", f"#{input_count} Enter")
                 elif ch == "\t":
                     session.write_raw("\t")
                     log("key", f"#{input_count} Tab")
