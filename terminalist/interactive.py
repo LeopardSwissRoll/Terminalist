@@ -171,7 +171,9 @@ def _read_console_input(h_in: int) -> tuple[str | None, int, int]:
         ch = ke.uChar
         vk = ke.wVirtualKeyCode
         ctrl = ke.dwControlKeyState
-        return (ch if ch else None, vk, ctrl)
+        # '\x00' (NUL) means no character — treat as None
+        # This happens for special keys (arrows, F-keys, etc.)
+        return (ch if ch and ch != "\x00" else None, vk, ctrl)
 
 
 def parse_args() -> argparse.Namespace:
