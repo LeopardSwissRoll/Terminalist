@@ -1,0 +1,112 @@
+# Terminalist
+
+LLM CLI 멀티터미널 관리자. PTY + pyte + VT100 직접 제어.
+
+## 비전
+
+```
+Terminalist = tmux (터미널 멀티플렉서)
+            + 마우스 입력
+            + Flow (LLM 입출력 파이프라인)
+            + Remote (브라우저/타 기기 연결)
+```
+
+tmux의 키바인딩/UX를 기본으로 하되, Terminalist의 기능은 superset.
+키보드만으로 충분히 쓸 수 있으면서, 마우스가 있으면 더 유용한 UX.
+
+## 아키텍처
+
+```
+입력: os.read(stdin)  →  키 파싱  →  InputRouter (keymap.py 기반)
+                                        ├─ prefix 명령 → 앱 액션
+                                        └─ 나머지 → 활성 PTY에 전달
+
+출력: PTY → PtyProcess.read()  →  pyte Screen (가상 화면)
+      → Layer 0에 복사 (screen_sync)
+      → Layer 1 (상태바/탭)
+      → Compositor (diff 렌더) → VT100 시퀀스 → stdout
+```
+
+**TUI 프레임워크를 사용하지 않는다.** 입력과 출력을 직접 제어한다.
+
+## 현재 상태
+
+**완료 (검증됨):**
+- `core/` — TerminalSession(PtyProcess+pyte), LLMSession ABC, Claude/Codex/Shell 세션, SessionManager
+- `events/` — TES 3채널 (Data/Control/State), EventStreamManager
+- `keymap.py` — 키바인딩 단일 진실
+- `vt100.py` — Textual key name → VT100 시퀀스 매핑
+- `pyte_patch.py` — pyte 색 이름 Rich 호환 패치
+- `debug.py` — 레이어별 로깅
+
+**구현 필요:**
+- `app.py` — 메인 루프 (입력→디스패치→렌더)
+- Split 이진 트리 (레이아웃)
+- Layer + Compositor (화면 합성 + diff 렌더)
+- 입력 백엔드 (os.read + 키 파싱 + SGR 마우스)
+- 상태바/탭바 (Layer 1)
+
+## 아키텍처 원칙 (반드시 지킬 것)
+
+1. **TUI 프레임워크(Textual 등)를 사용하지 않는다** — 입력/출력 직접 제어
+2. **입력은 os.read(stdin)** — ConPTY/VSCode에서 Ctrl+B/C 동작 확인됨
+3. **출력은 VT100 직접 쓰기** — ESC[ 시퀀스로 커서 이동, 색상 적용, 화면 갱신
+4. **화면 관리**: Split 이진 트리 + Layer 합성 + prev_frame diff (변경 셀만 출력)
+5. **세션 내부 동작은 상속**, TES 바인딩은 런타임 조합
+6. **TES 3채널**: Data(FIFO, cursor) / Control(즉시) / State(브로드캐스트)
+7. **MANUAL 모드**: 포커스 시 외부 Data 차단, 이전 상태 저장/복원
+8. **PtyProcess 사용** (winpty.PTY가 아닌 — PTY는 1회 읽고 사망하는 버그)
+9. **pyte_patch.py**: 앱 시작 시 pyte 색 이름을 Rich 호환으로 수정
+10. **keymap.py가 키바인딩의 단일 진실 공급원** — 새 바인딩은 여기에만 추가
+11. **tmux 키 모델**: Ctrl+B prefix만 가로채고, 나머지 모든 키는 PTY로 직접 전달
+
+## 기술 스택
+
+- Python 3.11+, pywinpty (PtyProcess), pyte (가상 터미널)
+- 패키지명: `terminalist`
+- 의존성: pywinpty, pyte (그 외 없음)
+- 디버그: `--debug` → `terminalist_debug.log`
+
+## 파일 구조
+
+```
+terminalist/
+├── app.py              메인 루프 (구현 필요)
+├── pyte_patch.py       pyte 색 이름 Rich 호환 패치
+├── debug.py            --debug 로깅
+├── keymap.py           키바인딩 정의 (단일 진실 공급원)
+├── vt100.py            key name → VT100 escape 매핑
+├── core/
+│   ├── terminal_session.py  TerminalSession (base: PtyProcess + pyte)
+│   ├── llm_session.py       LLMSession ABC
+│   ├── claude_session.py
+│   ├── codex_session.py
+│   ├── shell_session.py
+│   └── session_manager.py   SessionManager
+└── events/
+    ├── event.py              Event, Channel
+    └── tes.py                EventStreamManager (TES)
+```
+
+## 코딩 규칙
+
+- 새 키바인딩 → `keymap.py`에만 추가
+- PTY 관련 → `reference/fakeTerm.py`의 검증된 패턴 참고
+- pyte 색 → `pyte_patch.py`에서 해결
+- API 사용 전 `help()` / `dir()`로 실제 시그니처 확인 — 리서치만 믿지 말 것
+- `--debug` 로그로 문제 추적 가능하게 각 레이어에 `log()` 호출 유지
+- CJK wide character: pyte stub cell (`data=""`) skip 필요
+- `except Exception: pass` 금지 — 최소한 로깅
+
+## 알려진 제약
+
+- VSCode 통합 터미널에서 Ctrl+D/Q는 워크벤치가 가로채서 코드로 해결 불가
+- IME 한국어 상태에서 Ctrl+키가 자모로 변환됨
+- ConPTY의 ReadConsoleInputW는 vkCode=0으로 Ctrl+키를 보냄 → os.read(stdin)으로 우회
+
+## 핵심 참고 자료 (reference/ 디렉토리)
+
+- `architecture-design.md` — Split 트리 + Layer + Compositor 설계 (~300줄)
+- `fakeTerm.py` / `fakeTerm.md` — Windows PTY 패턴 (PtyProcess, DA drain, 키 매핑)
+- `ctrl-key-investigation.html` — Ctrl+키 입력 문제 조사 보고서 (삽질 방지용)
+- `textual-exit-plan.md` — 이전 TUI 프레임워크에서 직접 제어로 전환한 설계 문서

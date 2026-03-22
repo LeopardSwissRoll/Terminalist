@@ -1,0 +1,1223 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Textual 프레임워크 아키텍처 분석</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface2: #1c2333;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --orange: #d29922;
+    --red: #f85149;
+    --purple: #bc8cff;
+    --pink: #f778ba;
+    --cyan: #39d2c0;
+    --yellow: #e3b341;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Segoe UI', -apple-system, 'Noto Sans KR', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* ── Hero ── */
+  .hero {
+    text-align: center;
+    padding: 80px 20px 60px;
+    background: linear-gradient(180deg, #0d1117 0%, #101820 100%);
+    position: relative;
+    overflow: hidden;
+  }
+  .hero::before {
+    content: '';
+    position: absolute;
+    top: -50%; left: -50%;
+    width: 200%; height: 200%;
+    background: radial-gradient(circle at 50% 80%, rgba(88,166,255,.08) 0%, transparent 50%);
+    pointer-events: none;
+  }
+  .hero h1 {
+    font-size: 3.2rem;
+    font-weight: 800;
+    letter-spacing: -1px;
+    margin-bottom: 12px;
+  }
+  .hero h1 .accent { color: var(--accent); }
+  .hero .tagline {
+    font-size: 1.25rem;
+    color: var(--text-dim);
+    max-width: 750px;
+    margin: 0 auto 30px;
+  }
+  .hero-badges {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 6px 16px;
+    font-size: .85rem;
+    color: var(--text-dim);
+  }
+  .badge .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .badge .dot.green { background: var(--green); }
+  .badge .dot.blue { background: var(--accent); }
+  .badge .dot.orange { background: var(--orange); }
+  .badge .dot.purple { background: var(--purple); }
+
+  /* ── Navigation ── */
+  .toc {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 40px 20px 20px;
+  }
+  .toc h2 {
+    font-size: 1.1rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .toc-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 12px;
+  }
+  .toc-item {
+    display: block;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 18px;
+    text-decoration: none;
+    color: var(--text);
+    font-size: .95rem;
+    transition: border-color .2s, background .2s;
+  }
+  .toc-item:hover {
+    border-color: var(--accent);
+    background: var(--surface2);
+  }
+  .toc-item .num {
+    color: var(--accent);
+    font-weight: 700;
+    margin-right: 8px;
+  }
+
+  /* ── Sections ── */
+  .container {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 0 20px 80px;
+  }
+
+  section {
+    margin-top: 60px;
+  }
+  section > h2 {
+    font-size: 1.9rem;
+    font-weight: 700;
+    margin-bottom: 8px;
+    padding-bottom: 12px;
+    border-bottom: 2px solid var(--border);
+  }
+  section > h2 .sec-num {
+    color: var(--accent);
+    margin-right: 10px;
+  }
+
+  h3 {
+    font-size: 1.3rem;
+    margin-top: 32px;
+    margin-bottom: 12px;
+    color: var(--green);
+  }
+
+  h4 {
+    font-size: 1.05rem;
+    margin-top: 24px;
+    margin-bottom: 8px;
+    color: var(--purple);
+  }
+
+  p {
+    margin-bottom: 14px;
+    color: var(--text);
+  }
+  .dim { color: var(--text-dim); }
+
+  ul, ol {
+    margin: 0 0 16px 24px;
+  }
+  li {
+    margin-bottom: 6px;
+  }
+
+  /* ── Code & Key ── */
+  code {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px 7px;
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: .88em;
+    color: var(--cyan);
+  }
+
+  pre {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px 24px;
+    overflow-x: auto;
+    margin: 16px 0;
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: .9rem;
+    line-height: 1.6;
+    color: var(--text);
+  }
+  pre code {
+    background: none;
+    border: none;
+    padding: 0;
+    color: inherit;
+    font-size: inherit;
+  }
+  .kw { color: var(--purple); }
+  .fn { color: var(--accent); }
+  .str { color: var(--cyan); }
+  .cmt { color: var(--text-dim); }
+  .cls { color: var(--green); }
+  .arg { color: var(--orange); }
+  .sym { color: var(--pink); }
+
+  kbd {
+    display: inline-block;
+    background: linear-gradient(180deg, #2d333b 0%, #22272e 100%);
+    border: 1px solid #444c56;
+    border-bottom: 3px solid #373e47;
+    border-radius: 5px;
+    padding: 2px 8px;
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: .85em;
+    color: var(--text);
+    white-space: nowrap;
+    box-shadow: 0 1px 2px rgba(0,0,0,.3);
+  }
+
+  /* ── Tables ── */
+  .key-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: .92rem;
+  }
+  .key-table th {
+    text-align: left;
+    background: var(--surface2);
+    color: var(--accent);
+    padding: 10px 14px;
+    border-bottom: 2px solid var(--border);
+    font-weight: 600;
+  }
+  .key-table td {
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  .key-table tr:hover td {
+    background: rgba(88,166,255,.04);
+  }
+  .key-table .key-col {
+    white-space: nowrap;
+    color: var(--cyan);
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: .88em;
+  }
+
+  /* ── Info boxes ── */
+  .info-box {
+    background: var(--surface);
+    border-left: 4px solid var(--accent);
+    border-radius: 0 10px 10px 0;
+    padding: 16px 20px;
+    margin: 20px 0;
+  }
+  .info-box.tip { border-left-color: var(--green); }
+  .info-box.warn { border-left-color: var(--orange); }
+  .info-box.danger { border-left-color: var(--red); }
+  .info-box .label {
+    font-weight: 700;
+    font-size: .85rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 6px;
+  }
+  .info-box.tip .label { color: var(--green); }
+  .info-box.warn .label { color: var(--orange); }
+  .info-box.danger .label { color: var(--red); }
+  .info-box .label.blue { color: var(--accent); }
+
+  /* ── Diagram boxes ── */
+  .diagram {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin: 20px 0;
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: .85rem;
+    line-height: 1.5;
+    overflow-x: auto;
+    white-space: pre;
+    color: var(--text-dim);
+  }
+  .diagram .hl { color: var(--green); font-weight: 700; }
+  .diagram .ac { color: var(--accent); }
+  .diagram .wr { color: var(--orange); }
+  .diagram .pk { color: var(--pink); }
+  .diagram .cy { color: var(--cyan); }
+
+  /* ── Layer cards ── */
+  .layer-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 16px;
+    margin: 20px 0;
+  }
+  .layer-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    transition: border-color .2s;
+  }
+  .layer-card:hover { border-color: var(--accent); }
+  .layer-card h4 {
+    color: var(--green);
+    margin: 0 0 8px;
+    font-size: 1.1rem;
+  }
+  .layer-card .file {
+    font-family: 'Cascadia Code', monospace;
+    font-size: .82rem;
+    color: var(--cyan);
+    margin-bottom: 8px;
+  }
+  .layer-card p {
+    font-size: .9rem;
+    color: var(--text-dim);
+    margin: 0;
+  }
+
+  /* ── Lifecycle steps ── */
+  .lifecycle {
+    position: relative;
+    padding-left: 32px;
+    margin: 20px 0;
+  }
+  .lifecycle::before {
+    content: '';
+    position: absolute;
+    left: 11px;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: var(--border);
+  }
+  .lifecycle .step {
+    position: relative;
+    margin-bottom: 16px;
+  }
+  .lifecycle .step::before {
+    content: '';
+    position: absolute;
+    left: -25px;
+    top: 7px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid var(--bg);
+  }
+  .lifecycle .step.active::before { background: var(--green); }
+  .lifecycle .step .step-title {
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 2px;
+  }
+  .lifecycle .step .step-desc {
+    font-size: .9rem;
+    color: var(--text-dim);
+  }
+
+  /* ── Pattern cards ── */
+  .pattern-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 16px;
+    margin: 20px 0;
+  }
+  .pattern-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+    transition: border-color .2s;
+  }
+  .pattern-card:hover { border-color: var(--purple); }
+  .pattern-card .num {
+    display: inline-block;
+    width: 28px; height: 28px;
+    line-height: 28px;
+    text-align: center;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    font-size: .8rem;
+    font-weight: 700;
+    color: var(--purple);
+    margin-bottom: 8px;
+  }
+  .pattern-card h4 {
+    color: var(--text);
+    margin: 0 0 6px;
+    font-size: 1rem;
+  }
+  .pattern-card p {
+    font-size: .88rem;
+    color: var(--text-dim);
+    margin: 0;
+  }
+
+  /* ── Footer ── */
+  footer {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--text-dim);
+    font-size: .85rem;
+    border-top: 1px solid var(--border);
+  }
+  footer a { color: var(--accent); text-decoration: none; }
+  footer a:hover { text-decoration: underline; }
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: #484f58; }
+
+  /* ── Responsive ── */
+  @media (max-width: 700px) {
+    .hero h1 { font-size: 2.2rem; }
+    .toc-grid { grid-template-columns: 1fr; }
+    .layer-grid { grid-template-columns: 1fr; }
+    .pattern-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ════════════════════ HERO ════════════════════ -->
+<div class="hero">
+  <h1><span class="accent">Textual</span> 아키텍처 분석</h1>
+  <p class="tagline">
+    Python TUI 프레임워크 Textual의 내부 구조를 소스코드 레벨에서 분석합니다.
+    Terminalist 개발 관점에서 핵심 구조와 데이터 흐름을 정리했습니다.
+  </p>
+  <div class="hero-badges">
+    <span class="badge"><span class="dot green"></span> Python 3.8+</span>
+    <span class="badge"><span class="dot blue"></span> Textualize 개발</span>
+    <span class="badge"><span class="dot orange"></span> Rich 기반 렌더링</span>
+    <span class="badge"><span class="dot purple"></span> asyncio 이벤트 루프</span>
+  </div>
+</div>
+
+<!-- ════════════════════ TOC ════════════════════ -->
+<nav class="toc">
+  <h2>목차</h2>
+  <div class="toc-grid">
+    <a class="toc-item" href="#file-structure"><span class="num">01</span>파일 구조 개요</a>
+    <a class="toc-item" href="#class-hierarchy"><span class="num">02</span>클래스 계층 구조</a>
+    <a class="toc-item" href="#message-pump"><span class="num">03</span>MessagePump &mdash; 심장</a>
+    <a class="toc-item" href="#dom-widget"><span class="num">04</span>DOMNode &amp; Widget</a>
+    <a class="toc-item" href="#screen-app"><span class="num">05</span>Screen &amp; App</a>
+    <a class="toc-item" href="#drivers"><span class="num">06</span>드라이버 시스템</a>
+    <a class="toc-item" href="#rendering"><span class="num">07</span>렌더링 파이프라인</a>
+    <a class="toc-item" href="#css"><span class="num">08</span>CSS 엔진 (TCSS)</a>
+    <a class="toc-item" href="#reactive"><span class="num">09</span>Reactive &amp; Worker</a>
+    <a class="toc-item" href="#events"><span class="num">10</span>이벤트 계층</a>
+    <a class="toc-item" href="#patterns"><span class="num">11</span>핵심 설계 패턴</a>
+    <a class="toc-item" href="#dataflow"><span class="num">12</span>전체 데이터 흐름</a>
+  </div>
+</nav>
+
+<!-- ════════════════════ CONTENT ════════════════════ -->
+<div class="container">
+
+<!-- ── 1. File Structure ── -->
+<section id="file-structure">
+  <h2><span class="sec-num">01</span>파일 구조 개요</h2>
+  <p>Textual의 소스코드는 <code>src/textual/</code> 아래에 약 80개 이상의 모듈로 구성됩니다. 핵심 모듈들을 기능별로 분류하면 다음과 같습니다.</p>
+
+  <div class="layer-grid">
+    <div class="layer-card">
+      <h4>Core</h4>
+      <div class="file">app.py / screen.py / widget.py</div>
+      <p>App, Screen, Widget &mdash; 앱의 3대 축. 이벤트 루프, 화면 컨테이너, 시각 요소를 담당합니다.</p>
+    </div>
+    <div class="layer-card">
+      <h4>Message System</h4>
+      <div class="file">message.py / message_pump.py / events.py</div>
+      <p>모든 상호작용의 기반. 비동기 큐, 핸들러 디스패치, 이벤트 타입 정의.</p>
+    </div>
+    <div class="layer-card">
+      <h4>DOM &amp; Style</h4>
+      <div class="file">dom.py / css/ / reactive.py / binding.py</div>
+      <p>HTML DOM 유사 트리, TCSS 파싱/매칭/캐스케이딩, 반응형 속성, 키 바인딩.</p>
+    </div>
+    <div class="layer-card">
+      <h4>Rendering</h4>
+      <div class="file">_compositor.py / strip.py / content.py / visual.py</div>
+      <p>화면 합성, Strip(불변 라인), 스타일 텍스트, 렌더링 프로토콜.</p>
+    </div>
+    <div class="layer-card">
+      <h4>Input</h4>
+      <div class="file">_xterm_parser.py / _ansi_sequences.py / keys.py</div>
+      <p>터미널 입력 파싱, ANSI 시퀀스 매핑, Kitty 프로토콜, 키 이름 체계.</p>
+    </div>
+    <div class="layer-card">
+      <h4>Drivers</h4>
+      <div class="file">drivers/windows_driver.py / linux_driver.py / ...</div>
+      <p>플랫폼별 I/O 추상화. Windows ConPTY, Linux termios, Web, Headless.</p>
+    </div>
+  </div>
+
+  <div class="diagram"><span class="ac">textual/</span>
+├── <span class="hl">app.py</span>              App 클래스 (진입점, 이벤트 루프)
+├── <span class="hl">driver.py</span>           Driver ABC (플랫폼 I/O 추상화)
+├── <span class="hl">screen.py</span>           Screen (위젯 컨테이너, 레이아웃)
+├── <span class="hl">widget.py</span>           Widget (시각 요소 베이스)
+├── <span class="hl">dom.py</span>              DOMNode (트리 구조 베이스)
+├── <span class="ac">message.py</span>          Message (이벤트/메시지 베이스)
+├── <span class="ac">message_pump.py</span>     MessagePump (비동기 메시지 큐)
+├── <span class="ac">events.py</span>           내장 이벤트 타입들
+├── <span class="ac">binding.py</span>          키 바인딩 시스템
+├── <span class="ac">reactive.py</span>         Reactive 디스크립터
+├── <span class="cy">_compositor.py</span>      화면 합성 엔진
+├── <span class="cy">_xterm_parser.py</span>    터미널 입력 파서
+├── <span class="cy">_ansi_sequences.py</span>  ANSI 시퀀스 &rarr; 키 매핑
+├── <span class="cy">_keyboard_protocol.py</span> Kitty 프로토콜 키 정의
+├── <span class="cy">_dispatch_key.py</span>    key_&lt;name&gt; 핸들러 디스패치
+├── <span class="cy">keys.py</span>             Keys enum (키 이름 정의)
+│
+├── <span class="wr">drivers/</span>            플랫폼별 드라이버
+│   ├── windows_driver.py + win32.py   (Windows ConPTY)
+│   ├── linux_driver.py                (Linux/macOS)
+│   ├── web_driver.py                  (브라우저)
+│   └── headless_driver.py             (테스트용)
+│
+├── <span class="pk">css/</span>                CSS 엔진
+│   ├── parse.py / model.py / match.py
+│   ├── styles.py / stylesheet.py / scalar.py
+│
+└── <span class="pk">layouts/</span>            레이아웃 엔진
+    ├── vertical.py / horizontal.py / grid.py</div>
+</section>
+
+<!-- ── 2. Class Hierarchy ── -->
+<section id="class-hierarchy">
+  <h2><span class="sec-num">02</span>클래스 계층 구조</h2>
+  <p>Textual의 모든 핵심 클래스는 하나의 뿌리에서 시작합니다: <code>MessagePump</code>.</p>
+
+  <div class="diagram"><span class="hl">MessagePump</span> <span class="cy">(비동기 메시지 큐 + 핸들러 디스패치)</span>
+  └── <span class="hl">DOMNode</span> <span class="cy">(트리 구조 + CSS 스타일 + 키 바인딩)</span>
+        ├── <span class="ac">App</span> <span class="cy">(이벤트 루프 + 드라이버 + 스타일시트)</span>
+        └── <span class="ac">Widget</span> <span class="cy">(시각 렌더링 + 포커스 + 레이아웃)</span>
+              └── <span class="pk">Screen</span> <span class="cy">(컴포지터 + 위젯 컨테이너 + 포커스 관리)</span></div>
+
+  <div class="info-box tip">
+    <div class="label">핵심 인사이트</div>
+    <p><strong>App도 Widget도 결국 MessagePump를 상속</strong>합니다. 즉 모든 Textual 객체는 자신만의 메시지 큐를 돌리는 비동기 메시지 처리기입니다. 이 설계 덕분에 이벤트를 주입하는 것만으로 테스트가 가능합니다.</p>
+  </div>
+</section>
+
+<!-- ── 3. MessagePump ── -->
+<section id="message-pump">
+  <h2><span class="sec-num">03</span>MessagePump &mdash; Textual의 심장</h2>
+  <p>모든 Textual 객체의 베이스. 비동기 메시지 큐를 운영하며, 핸들러를 자동 탐색해 디스패치합니다.</p>
+
+  <h3>내부 상태</h3>
+<pre><code><span class="kw">class</span> <span class="cls">MessagePump</span>:
+    <span class="arg">_message_queue</span>: Queue[Message]    <span class="cmt"># 대기 중인 메시지</span>
+    <span class="arg">_task</span>: asyncio.Task               <span class="cmt"># _process_messages_loop() 실행 태스크</span>
+    <span class="arg">_timers</span>: WeakSet[Timer]           <span class="cmt"># 활성 타이머들</span>
+    <span class="arg">_next_callbacks</span>: List              <span class="cmt"># 현재 메시지 처리 후 실행할 콜백</span>
+    <span class="arg">_decorated_handlers</span>: Dict          <span class="cmt"># @on() 데코레이터 핸들러 캐시</span></code></pre>
+
+  <h3>메시지 처리 루프</h3>
+  <div class="lifecycle">
+    <div class="step active">
+      <div class="step-title">1. _process_messages_loop()</div>
+      <div class="step-desc">메인 비동기 루프. 큐에서 메시지를 하나씩 디큐합니다.</div>
+    </div>
+    <div class="step">
+      <div class="step-title">2. _dispatch_message(msg)</div>
+      <div class="step-desc">메시지를 적절한 핸들러로 라우팅합니다.</div>
+    </div>
+    <div class="step">
+      <div class="step-title">3. _get_dispatch_methods(name, msg)</div>
+      <div class="step-desc">MRO(Method Resolution Order)를 순회하며 핸들러를 탐색합니다.</div>
+    </div>
+    <div class="step">
+      <div class="step-title">4. Idle 이벤트 삽입</div>
+      <div class="step-desc">큐가 비면 <code>Idle</code> 이벤트를 삽입하여 렌더링을 트리거합니다.</div>
+    </div>
+  </div>
+
+  <h3>핸들러 탐색 우선순위</h3>
+  <div class="info-box">
+    <div class="label blue">순서</div>
+    <ol>
+      <li><code>@on()</code> 데코레이터로 등록된 핸들러 (명시적)</li>
+      <li><code>on_&lt;message_name&gt;()</code> 네이밍 컨벤션 (암묵적)</li>
+      <li>MRO 순서로 상위 클래스까지 탐색</li>
+    </ol>
+  </div>
+
+  <h3>실제 예시</h3>
+<pre><code><span class="kw">from</span> textual.app <span class="kw">import</span> App
+<span class="kw">from</span> textual <span class="kw">import</span> events, on
+<span class="kw">from</span> textual.widgets <span class="kw">import</span> Button
+
+<span class="kw">class</span> <span class="cls">MyApp</span>(App):
+
+    <span class="cmt"># 방법 1: 네이밍 컨벤션</span>
+    <span class="kw">def</span> <span class="fn">on_key</span>(self, event: events.Key):
+        self.log(f<span class="str">"키 입력: {event.key}"</span>)
+
+    <span class="cmt"># 방법 2: @on() 데코레이터 (셀렉터 지원)</span>
+    @on(Button.Pressed, <span class="str">"#submit"</span>)
+    <span class="kw">def</span> <span class="fn">handle_submit</span>(self, event: Button.Pressed):
+        self.log(<span class="str">"제출 버튼 눌림!"</span>)</code></pre>
+
+  <h3>주요 메서드</h3>
+  <table class="key-table">
+    <tr><th>메서드</th><th>설명</th></tr>
+    <tr><td class="key-col">post_message(msg)</td><td>큐에 메시지 추가 (스레드 안전)</td></tr>
+    <tr><td class="key-col">call_next(callback)</td><td>현재 메시지 처리 완료 후 즉시 실행</td></tr>
+    <tr><td class="key-col">call_later(callback)</td><td>큐에 이벤트로 추가 (지연 실행)</td></tr>
+    <tr><td class="key-col">set_timer(delay, cb)</td><td>원샷 타이머</td></tr>
+    <tr><td class="key-col">set_interval(interval, cb)</td><td>반복 타이머</td></tr>
+    <tr><td class="key-col">prevent(MsgType)</td><td>컨텍스트 매니저: 특정 메시지 타입 억제</td></tr>
+  </table>
+</section>
+
+<!-- ── 4. DOMNode & Widget ── -->
+<section id="dom-widget">
+  <h2><span class="sec-num">04</span>DOMNode &amp; Widget</h2>
+
+  <h3>DOMNode &mdash; 트리 구조</h3>
+  <p>HTML DOM과 유사한 트리 구조. CSS 셀렉터 쿼리를 지원합니다.</p>
+<pre><code><span class="kw">class</span> <span class="cls">DOMNode</span>(MessagePump):
+    <span class="arg">_nodes</span>: NodeList        <span class="cmt"># 자식 노드들</span>
+    <span class="arg">_id</span>: str | None         <span class="cmt"># CSS ID (#id)</span>
+    <span class="arg">_classes</span>: set[str]      <span class="cmt"># CSS 클래스 (.class)</span>
+    <span class="arg">_css_styles</span>: Styles     <span class="cmt"># CSS에서 온 스타일</span>
+    <span class="arg">_inline_styles</span>: Styles  <span class="cmt"># 인라인 스타일</span>
+    <span class="arg">styles</span>: RenderStyles    <span class="cmt"># 병합된 최종 스타일</span>
+    <span class="arg">_bindings</span>: BindingsMap  <span class="cmt"># 키 바인딩</span></code></pre>
+
+  <h4>쿼리 예시</h4>
+<pre><code><span class="cmt"># CSS 셀렉터로 위젯 탐색</span>
+buttons = self.<span class="fn">query</span>(<span class="str">"Button.primary"</span>)      <span class="cmt"># 여러 매치</span>
+header = self.<span class="fn">query_one</span>(<span class="str">"#header"</span>, Header)   <span class="cmt"># 단일 매치 (캐시됨)</span>
+self.<span class="fn">walk_children</span>(method=<span class="str">"dfs"</span>)               <span class="cmt"># 깊이 우선 순회</span></code></pre>
+
+  <h3>Widget &mdash; 시각 요소</h3>
+  <p>화면에 그려지는 모든 요소의 베이스 클래스입니다.</p>
+<pre><code><span class="kw">class</span> <span class="cls">Widget</span>(DOMNode):
+    <span class="cmt"># Reactive 속성들</span>
+    <span class="arg">can_focus</span>: bool      <span class="cmt"># 포커스 가능 여부</span>
+    <span class="arg">disabled</span>: bool       <span class="cmt"># 비활성화</span>
+    <span class="arg">loading</span>: bool        <span class="cmt"># 로딩 상태</span>
+
+    <span class="cmt"># 크기/위치</span>
+    <span class="arg">size</span>: Size           <span class="cmt"># 현재 렌더링 크기 (width, height)</span>
+    <span class="arg">virtual_size</span>: Size   <span class="cmt"># 스크롤 가능한 전체 크기</span>
+    <span class="arg">region</span>: Region       <span class="cmt"># 화면 상 위치 (x, y, width, height)</span></code></pre>
+
+  <h3>위젯 라이프사이클</h3>
+  <div class="lifecycle">
+    <div class="step">
+      <div class="step-title">Widget()</div>
+      <div class="step-desc">인스턴스 생성</div>
+    </div>
+    <div class="step">
+      <div class="step-title">_register()</div>
+      <div class="step-desc">App 레지스트리에 등록</div>
+    </div>
+    <div class="step">
+      <div class="step-title">stylesheet.apply()</div>
+      <div class="step-desc">CSS 적용</div>
+    </div>
+    <div class="step">
+      <div class="step-title">_start_messages()</div>
+      <div class="step-desc">메시지 태스크 시작</div>
+    </div>
+    <div class="step active">
+      <div class="step-title">Compose 이벤트</div>
+      <div class="step-desc">자식 위젯 구성 &mdash; <code>compose()</code> 메서드 호출</div>
+    </div>
+    <div class="step active">
+      <div class="step-title">Mount 이벤트</div>
+      <div class="step-desc">사용 준비 완료 &mdash; DOM 쿼리 가능</div>
+    </div>
+  </div>
+
+  <h3>렌더링 예시</h3>
+<pre><code><span class="kw">from</span> textual.widget <span class="kw">import</span> Widget
+<span class="kw">from</span> textual.content <span class="kw">import</span> Content
+
+<span class="kw">class</span> <span class="cls">StatusBar</span>(Widget):
+    <span class="arg">DEFAULT_CSS</span> = <span class="str">"""
+    StatusBar {
+        dock: bottom;
+        height: 1;
+        background: $accent;
+        color: $text;
+    }
+    """</span>
+
+    <span class="kw">def</span> <span class="fn">render</span>(self) -> Content:
+        <span class="cmt"># render()는 str, Content, Visual, Rich 렌더러블 반환 가능</span>
+        <span class="kw">return</span> Content.from_markup(
+            <span class="str">" [bold]NORMAL[/] | Pane 1 of 3 | 14:32 "</span>
+        )</code></pre>
+</section>
+
+<!-- ── 5. Screen & App ── -->
+<section id="screen-app">
+  <h2><span class="sec-num">05</span>Screen &amp; App</h2>
+
+  <h3>Screen &mdash; 위젯 컨테이너</h3>
+  <p>위젯 트리의 최상위 컨테이너. 내부에 <code>Compositor</code>를 가지고 있어 레이아웃과 렌더링을 총괄합니다.</p>
+<pre><code><span class="kw">class</span> <span class="cls">Screen</span>(Widget):
+    <span class="arg">_compositor</span>: Compositor     <span class="cmt"># 레이아웃 & 렌더링 엔진</span>
+    <span class="arg">_dirty_widgets</span>: set         <span class="cmt"># 업데이트 필요한 위젯들</span>
+    <span class="arg">focused</span>: Widget | None      <span class="cmt"># 현재 포커스된 위젯</span>
+    <span class="arg">maximized</span>: Widget | None    <span class="cmt"># 최대화된 위젯</span></code></pre>
+
+  <div class="info-box">
+    <div class="label blue">스크린 스택</div>
+    <p>스크린은 <strong>스택</strong>으로 관리됩니다. <code>app.push_screen()</code>으로 새 스크린을 쌓고, 활성 스크린은 항상 스택 최상위입니다. 모달 다이얼로그가 이 방식으로 구현됩니다.</p>
+  </div>
+
+  <h3>App &mdash; 최상위 오케스트레이터</h3>
+<pre><code><span class="kw">class</span> <span class="cls">App</span>(DOMNode):
+    <span class="arg">console</span>: Console           <span class="cmt"># Rich Console (출력)</span>
+    <span class="arg">driver</span>: Driver             <span class="cmt"># 플랫폼 I/O</span>
+    <span class="arg">_screen_stack</span>: list[Screen]  <span class="cmt"># 화면 스택</span>
+    <span class="arg">stylesheet</span>: Stylesheet     <span class="cmt"># CSS 스타일시트</span>
+    <span class="arg">workers</span>: WorkerManager     <span class="cmt"># 백그라운드 태스크</span>
+    <span class="arg">focused</span>: Widget | None     <span class="cmt"># 현재 포커스</span>
+    <span class="arg">size</span>: Size                 <span class="cmt"># 터미널 크기</span></code></pre>
+
+  <h3>App 실행 순서</h3>
+  <div class="lifecycle">
+    <div class="step active">
+      <div class="step-title">1. 드라이버 생성 & start_application_mode()</div>
+      <div class="step-desc">플랫폼별 드라이버 초기화, alt screen 진입, 마우스 활성화</div>
+    </div>
+    <div class="step">
+      <div class="step-title">2. CSS 로드 & 파싱</div>
+      <div class="step-desc">DEFAULT_CSS + CSS + CSS_PATH 순서로 로드</div>
+    </div>
+    <div class="step">
+      <div class="step-title">3. Load &rarr; Compose &rarr; Resize &rarr; Mount</div>
+      <div class="step-desc">이벤트 시퀀스로 위젯 트리 구성 및 최초 레이아웃</div>
+    </div>
+    <div class="step active">
+      <div class="step-title">4. _process_messages_loop() 진입</div>
+      <div class="step-desc">메인 이벤트 루프 시작 &mdash; 여기서부터 사용자 입력 처리</div>
+    </div>
+  </div>
+
+  <h3>실제 App 예시</h3>
+<pre><code><span class="kw">from</span> textual.app <span class="kw">import</span> App, ComposeResult
+<span class="kw">from</span> textual.widgets <span class="kw">import</span> Header, Footer, Static
+
+<span class="kw">class</span> <span class="cls">MyApp</span>(App):
+    <span class="arg">CSS_PATH</span> = <span class="str">"my_app.tcss"</span>      <span class="cmt"># 외부 CSS 파일 (핫 리로드 지원)</span>
+    <span class="arg">BINDINGS</span> = [
+        (<span class="str">"q"</span>, <span class="str">"quit"</span>, <span class="str">"종료"</span>),
+        (<span class="str">"ctrl+b"</span>, <span class="str">"prefix"</span>, <span class="str">"Prefix"</span>),
+    ]
+
+    <span class="kw">def</span> <span class="fn">compose</span>(self) -> ComposeResult:
+        <span class="kw">yield</span> Header()
+        <span class="kw">yield</span> Static(<span class="str">"Hello, Textual!"</span>, id=<span class="str">"main"</span>)
+        <span class="kw">yield</span> Footer()
+
+    <span class="kw">def</span> <span class="fn">on_mount</span>(self):
+        self.log(<span class="str">"앱이 마운트되었습니다."</span>)
+
+<span class="kw">if</span> __name__ == <span class="str">"__main__"</span>:
+    MyApp().run()</code></pre>
+</section>
+
+<!-- ── 6. Drivers ── -->
+<section id="drivers">
+  <h2><span class="sec-num">06</span>드라이버 시스템</h2>
+  <p>드라이버는 <strong>플랫폼 I/O를 추상화</strong>합니다. 입력 읽기, 출력 쓰기, 터미널 모드 전환을 담당합니다.</p>
+
+  <h3>Driver ABC</h3>
+<pre><code><span class="kw">class</span> <span class="cls">Driver</span>(ABC):
+    <span class="kw">def</span> <span class="fn">write</span>(data: str)              <span class="cmt"># 터미널에 쓰기</span>
+    <span class="kw">def</span> <span class="fn">flush</span>()                       <span class="cmt"># 출력 버퍼 플러시</span>
+    <span class="kw">def</span> <span class="fn">start_application_mode</span>()      <span class="cmt"># raw 모드 진입</span>
+    <span class="kw">def</span> <span class="fn">stop_application_mode</span>()       <span class="cmt"># 원래 모드 복원</span>
+    <span class="kw">def</span> <span class="fn">disable_input</span>()               <span class="cmt"># 입력 읽기 중단</span>
+    <span class="kw">def</span> <span class="fn">process_message</span>(msg)          <span class="cmt"># 메시지 전처리 (좌표 조정 등)</span></code></pre>
+
+  <h3>드라이버 종류</h3>
+  <table class="key-table">
+    <tr>
+      <th>드라이버</th>
+      <th>파일</th>
+      <th>용도</th>
+    </tr>
+    <tr>
+      <td class="key-col">WindowsDriver</td>
+      <td><code>windows_driver.py</code> + <code>win32.py</code></td>
+      <td>Windows ConPTY. ReadConsoleInputW로 입력 읽기.</td>
+    </tr>
+    <tr>
+      <td class="key-col">LinuxDriver</td>
+      <td><code>linux_driver.py</code></td>
+      <td>Linux/macOS. os.read(stdin)으로 입력 읽기.</td>
+    </tr>
+    <tr>
+      <td class="key-col">WebDriver</td>
+      <td><code>web_driver.py</code></td>
+      <td>브라우저 기반 렌더링. WebSocket 통신.</td>
+    </tr>
+    <tr>
+      <td class="key-col">HeadlessDriver</td>
+      <td><code>headless_driver.py</code></td>
+      <td>테스트용. 80&times;25 고정 크기, I/O 없음.</td>
+    </tr>
+  </table>
+
+  <h3>Windows 드라이버 초기화 &mdash; 핵심 코드</h3>
+<pre><code><span class="cmt"># windows_driver.py:86-106</span>
+<span class="kw">def</span> <span class="fn">start_application_mode</span>(self):
+    self._restore_console = win32.<span class="fn">enable_application_mode</span>()
+
+    self.<span class="fn">write</span>(<span class="str">"\x1b[?1049h"</span>)   <span class="cmt"># Alt screen 활성화</span>
+    self.<span class="fn">_enable_mouse_support</span>()
+    self.<span class="fn">write</span>(<span class="str">"\x1b[?25l"</span>)     <span class="cmt"># 커서 숨김</span>
+    self.<span class="fn">write</span>(<span class="str">"\033[?1004h"</span>)   <span class="cmt"># FocusIn/FocusOut 활성화</span>
+    self.<span class="fn">write</span>(<span class="str">"\x1b[>1u"</span>)      <span class="cmt"># ★ Kitty 키보드 프로토콜 활성화</span>
+    self.<span class="fn">_enable_bracketed_paste</span>()</code></pre>
+
+  <div class="info-box warn">
+    <div class="label">주의: Win32 콘솔 모드</div>
+    <p><code>win32.py:179</code>에서 stdin을 <code>ENABLE_VIRTUAL_TERMINAL_INPUT</code> (0x0200)으로 설정합니다. 이때 <strong>기존 모드를 OR 하지 않고 대입</strong>하므로 ENABLE_PROCESSED_INPUT 등이 꺼집니다. 이것은 의도된 동작(raw 모드)이지만, Terminalist처럼 PTY를 호스팅하는 앱에서는 주의가 필요합니다.</p>
+  </div>
+</section>
+
+<!-- ── 7. Rendering ── -->
+<section id="rendering">
+  <h2><span class="sec-num">07</span>렌더링 파이프라인</h2>
+
+  <h3>전체 흐름</h3>
+  <div class="diagram"><span class="hl">사용자 액션</span> (키/마우스)
+      │
+      ▼
+이벤트 핸들러 → reactive 변경 or <span class="ac">refresh()</span> 호출
+      │
+      ▼
+dirty 영역 마킹 (<span class="wr">_repaint_required</span> / <span class="wr">_layout_required</span>)
+      │
+      ▼
+<span class="fn">check_idle()</span> → <span class="ac">Idle</span> 이벤트 스케줄
+      │
+      ▼
+  ┌─────────────────────────────────────────┐
+  │ <span class="pk">[레이아웃 단계]</span>                           │
+  │ Compositor.reflow() → Layout.arrange()   │
+  │ → 각 위젯의 위치/크기 계산               │
+  └─────────────────────────────────────────┘
+      │
+      ▼
+  ┌─────────────────────────────────────────┐
+  │ <span class="cy">[렌더링 단계]</span>                           │
+  │ Widget.render() → Visual.render_strips() │
+  │ → list[Strip] 생성                       │
+  └─────────────────────────────────────────┘
+      │
+      ▼
+  ┌─────────────────────────────────────────┐
+  │ <span class="wr">[합성 단계]</span>                             │
+  │ CSS 색상, 필터, 투명도 적용              │
+  │ Compositor → 변경 영역만 CompositorUpdate │
+  └─────────────────────────────────────────┘
+      │
+      ▼
+<span class="hl">Driver.write()</span> → ANSI 이스케이프 시퀀스 → 터미널</div>
+
+  <h3>핵심 렌더링 클래스</h3>
+  <div class="layer-grid">
+    <div class="layer-card">
+      <h4>Strip</h4>
+      <div class="file">strip.py</div>
+      <p><strong>불변(immutable)</strong>인 한 줄 렌더링 결과. Rich Segment 리스트. crop, style, filter 모두 캐시.</p>
+    </div>
+    <div class="layer-card">
+      <h4>Content</h4>
+      <div class="file">content.py</div>
+      <p>스타일된 텍스트. Span(start, end, style) 기반. 마크업 파싱, 줄바꿈, 잘라내기 지원.</p>
+    </div>
+    <div class="layer-card">
+      <h4>Visual</h4>
+      <div class="file">visual.py</div>
+      <p>렌더링 프로토콜 ABC. <code>render_strips()</code>, <code>get_optimal_width()</code>, <code>get_height()</code> 메서드.</p>
+    </div>
+    <div class="layer-card">
+      <h4>Compositor</h4>
+      <div class="file">_compositor.py</div>
+      <p>위젯들을 최종 화면으로 합성. dirty region 추적, hit testing (<code>get_widget_at()</code>).</p>
+    </div>
+  </div>
+
+  <h3>레이아웃 단위</h3>
+  <table class="key-table">
+    <tr><th>단위</th><th>의미</th><th>예시</th></tr>
+    <tr><td class="key-col">(숫자)</td><td>고정 셀 수</td><td><code>width: 20</code></td></tr>
+    <tr><td class="key-col">fr</td><td>남은 공간의 비율</td><td><code>width: 2fr</code></td></tr>
+    <tr><td class="key-col">%</td><td>부모 대비 퍼센트</td><td><code>width: 50%</code></td></tr>
+    <tr><td class="key-col">vw / vh</td><td>뷰포트 너비/높이 %</td><td><code>width: 100vw</code></td></tr>
+    <tr><td class="key-col">auto</td><td>자동 계산</td><td><code>width: auto</code></td></tr>
+  </table>
+</section>
+
+<!-- ── 8. CSS ── -->
+<section id="css">
+  <h2><span class="sec-num">08</span>CSS 엔진 (TCSS)</h2>
+  <p>Textual은 <strong>TCSS (Textual CSS)</strong>를 사용합니다. 웹 CSS의 서브셋으로, 터미널 환경에 맞게 조정되었습니다.</p>
+
+  <h3>처리 흐름</h3>
+  <div class="lifecycle">
+    <div class="step">
+      <div class="step-title">1. 토크나이징</div>
+      <div class="step-desc">CSS 텍스트 → 토큰 스트림 (셀렉터, 속성, 값)</div>
+    </div>
+    <div class="step">
+      <div class="step-title">2. 파싱</div>
+      <div class="step-desc">토큰 → RuleSet (SelectorSet + Styles)</div>
+    </div>
+    <div class="step">
+      <div class="step-title">3. 매칭</div>
+      <div class="step-desc">각 셀렉터를 DOM 노드에 매칭 (descendant, child, same 콤비네이터)</div>
+    </div>
+    <div class="step">
+      <div class="step-title">4. 캐스케이딩</div>
+      <div class="step-desc">특이성(specificity) 기반 스타일 병합. 인라인 > ID > 클래스 > 요소.</div>
+    </div>
+    <div class="step active">
+      <div class="step-title">5. 적용</div>
+      <div class="step-desc">최종 계산된 스타일을 위젯에 적용</div>
+    </div>
+  </div>
+
+  <h3>특이성 (Specificity) 예시</h3>
+  <table class="key-table">
+    <tr><th>셀렉터</th><th>특이성 (ID, Class, Element)</th></tr>
+    <tr><td class="key-col">#submit</td><td>(1, 0, 1)</td></tr>
+    <tr><td class="key-col">Button.primary</td><td>(0, 1, 1)</td></tr>
+    <tr><td class="key-col">Button:hover</td><td>(0, 1, 1)</td></tr>
+    <tr><td class="key-col">Screen > Button</td><td>(0, 0, 2)</td></tr>
+  </table>
+
+  <h3>TCSS 실제 예시</h3>
+<pre><code><span class="cmt">/* my_app.tcss */</span>
+<span class="cls">Screen</span> {
+    <span class="arg">layout</span>: vertical;
+}
+
+<span class="cls">Header</span> {
+    <span class="arg">dock</span>: top;
+    <span class="arg">height</span>: 3;
+    <span class="arg">background</span>: <span class="str">$accent</span>;
+}
+
+<span class="cls">#content</span> {
+    <span class="arg">layout</span>: horizontal;
+    <span class="arg">height</span>: 1fr;    <span class="cmt">/* 남은 공간 전부 차지 */</span>
+}
+
+<span class="cls">Sidebar</span> {
+    <span class="arg">width</span>: 25%;     <span class="cmt">/* 부모의 25% */</span>
+    <span class="arg">overflow-y</span>: auto;
+    <span class="arg">border-right</span>: solid <span class="str">$border</span>;
+}
+
+<span class="cls">MainArea</span> {
+    <span class="arg">width</span>: 1fr;     <span class="cmt">/* 나머지 전부 */</span>
+}
+
+<span class="cls">Button</span>.<span class="fn">primary</span>:<span class="kw">hover</span> {
+    <span class="arg">background</span>: <span class="str">$accent-lighten-1</span>;
+}</code></pre>
+
+  <h3>지원 속성 카테고리</h3>
+  <div class="layer-grid">
+    <div class="layer-card">
+      <h4>디스플레이</h4>
+      <p>display, visibility, layout, opacity, tint</p>
+    </div>
+    <div class="layer-card">
+      <h4>크기</h4>
+      <p>width, height, min-width, max-width, min-height, max-height</p>
+    </div>
+    <div class="layer-card">
+      <h4>간격 &amp; 테두리</h4>
+      <p>padding, margin, border, outline, offset</p>
+    </div>
+    <div class="layer-card">
+      <h4>색상 &amp; 텍스트</h4>
+      <p>color, background, text-align, text-wrap, text-style</p>
+    </div>
+    <div class="layer-card">
+      <h4>레이아웃</h4>
+      <p>dock, split, overlay, align, content-align, grid-*</p>
+    </div>
+    <div class="layer-card">
+      <h4>스크롤 &amp; 레이어</h4>
+      <p>overflow-x/y, scrollbar-*, layers, layer, transitions</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── 9. Reactive & Worker ── -->
+<section id="reactive">
+  <h2><span class="sec-num">09</span>Reactive &amp; Worker</h2>
+
+  <h3>Reactive 디스크립터</h3>
+  <p>값이 바뀌면 자동으로 리페인트/레이아웃을 트리거하는 파이썬 디스크립터입니다.</p>
+
+<pre><code><span class="kw">from</span> textual.reactive <span class="kw">import</span> reactive
+
+<span class="kw">class</span> <span class="cls">Counter</span>(Widget):
+    <span class="arg">count</span> = reactive(<span class="str">0</span>)                <span class="cmt"># 변경 시 자동 리페인트</span>
+    <span class="arg">title</span> = reactive(<span class="str">""</span>, layout=<span class="kw">True</span>)  <span class="cmt"># 변경 시 레이아웃도 재계산</span>
+
+    <span class="kw">def</span> <span class="fn">watch_count</span>(self, old: int, new: int):
+        <span class="cmt"># 워처: count가 바뀔 때마다 자동 호출</span>
+        self.log(f<span class="str">"카운트: {old} → {new}"</span>)
+
+    <span class="kw">def</span> <span class="fn">render</span>(self):
+        <span class="kw">return</span> f<span class="str">"Count: {self.count}"</span></code></pre>
+
+  <table class="key-table">
+    <tr><th>옵션</th><th>기본값</th><th>설명</th></tr>
+    <tr><td class="key-col">repaint</td><td>True</td><td>변경 시 위젯 리페인트</td></tr>
+    <tr><td class="key-col">layout</td><td>False</td><td>변경 시 부모 레이아웃 재계산</td></tr>
+    <tr><td class="key-col">init</td><td>False</td><td>마운트 시 워처 호출</td></tr>
+    <tr><td class="key-col">recompose</td><td>False</td><td>자식 위젯 재구성</td></tr>
+    <tr><td class="key-col">toggle_class</td><td>None</td><td>CSS 클래스 자동 토글</td></tr>
+  </table>
+
+  <h3>Worker 시스템</h3>
+  <p>비동기 또는 스레드 기반 백그라운드 작업을 관리합니다.</p>
+
+<pre><code><span class="kw">from</span> textual.worker <span class="kw">import</span> work
+
+<span class="kw">class</span> <span class="cls">MyWidget</span>(Widget):
+
+    @<span class="fn">work</span>(thread=<span class="kw">True</span>, exit_on_error=<span class="kw">False</span>)
+    <span class="kw">async def</span> <span class="fn">fetch_data</span>(self):
+        <span class="cmt"># 별도 스레드에서 실행됨</span>
+        result = <span class="kw">await</span> heavy_io_operation()
+        <span class="cmt"># UI 업데이트는 반드시 call_from_thread 사용!</span>
+        self.app.<span class="fn">call_from_thread</span>(self.<span class="fn">update_display</span>, result)</code></pre>
+
+  <div class="info-box warn">
+    <div class="label">주의</div>
+    <p><code>call_from_thread()</code>는 <strong>App 레벨에만 존재</strong>합니다. Widget에는 없으므로 반드시 <code>self.app.call_from_thread()</code>를 사용하세요.</p>
+  </div>
+</section>
+
+<!-- ── 10. Events ── -->
+<section id="events">
+  <h2><span class="sec-num">10</span>이벤트 계층</h2>
+
+  <div class="diagram"><span class="hl">Message</span>
+  └── <span class="ac">Event</span>
+        ├── <span class="hl">Load</span>          앱 시작            <span class="wr">(버블 안 함)</span>
+        ├── <span class="hl">Compose</span>       위젯 트리 구성
+        ├── <span class="hl">Mount</span>         마운트 완료        <span class="wr">(버블 안 함)</span>
+        ├── <span class="hl">Unmount</span>       언마운트           <span class="wr">(버블 안 함)</span>
+        ├── <span class="cy">Show / Hide</span>   가시성 변경
+        ├── <span class="cy">Resize</span>        크기 변경          <span class="wr">(버블 안 함)</span>
+        ├── <span class="cy">Focus / Blur</span>  포커스             <span class="wr">(버블 안 함)</span>
+        │
+        ├── <span class="pk">Key</span>           ★ 키보드 입력      <span class="hl">(버블)</span>
+        ├── <span class="pk">MouseMove</span>     마우스 이동         <span class="hl">(버블)</span>
+        ├── <span class="pk">MouseDown/Up</span>  마우스 클릭         <span class="hl">(버블)</span>
+        ├── <span class="pk">MouseScroll*</span>  마우스 스크롤       <span class="hl">(버블)</span>
+        ├── <span class="pk">Enter / Leave</span> 호버              <span class="hl">(버블)</span>
+        │
+        ├── <span class="ac">Idle</span>          큐 비었을 때       <span class="wr">(버블 안 함)</span>
+        ├── <span class="ac">Paste</span>         붙여넣기
+        ├── <span class="ac">AppFocus</span>      터미널 포커스 얻음
+        └── <span class="ac">AppBlur</span>       터미널 포커스 잃음</div>
+
+  <div class="info-box tip">
+    <div class="label">버블링 이해하기</div>
+    <p><code>bubble=True</code>인 이벤트(Key, Mouse 등)는 포커스된 위젯 → 부모 위젯 → ... → Screen → App 순서로 전파됩니다. <code>event.stop()</code>을 호출하면 전파가 중단됩니다.</p>
+  </div>
+
+  <h3>이벤트 핸들링 예시</h3>
+<pre><code><span class="kw">class</span> <span class="cls">TerminalPane</span>(Widget):
+    <span class="kw">def</span> <span class="fn">on_key</span>(self, event: events.Key):
+        <span class="kw">if</span> event.key == <span class="str">"ctrl+b"</span>:
+            <span class="cmt"># prefix 키 가로채기</span>
+            self.enter_prefix_mode()
+            event.<span class="fn">stop</span>()     <span class="cmt"># ★ 버블링 중단!</span>
+            <span class="kw">return</span>
+
+        <span class="cmt"># 나머지 키는 PTY로 전달</span>
+        self.send_to_pty(event)</code></pre>
+</section>
+
+<!-- ── 11. Patterns ── -->
+<section id="patterns">
+  <h2><span class="sec-num">11</span>핵심 설계 패턴</h2>
+
+  <div class="pattern-grid">
+    <div class="pattern-card">
+      <div class="num">1</div>
+      <h4>메시지 드리븐</h4>
+      <p>모든 상호작용이 Message. 테스트에서 모킹 없이 메시지만 주입하면 됨.</p>
+    </div>
+    <div class="pattern-card">
+      <div class="num">2</div>
+      <h4>합성 패턴 (Composite)</h4>
+      <p>DOMNode 트리로 App → Screen → Widget 계층 구성. CSS 셀렉터로 쿼리.</p>
+    </div>
+    <div class="pattern-card">
+      <div class="num">3</div>
+      <h4>리액티브 프로그래밍</h4>
+      <p>Reactive 디스크립터로 값 변경 → 자동 리페인트/레이아웃. 수동 갱신 불필요.</p>
+    </div>
+    <div class="pattern-card">
+      <div class="num">4</div>
+      <h4>관심사 분리</h4>
+      <p>Driver(I/O) / MessagePump(라우팅) / Widget(렌더링) / Compositor(합성) 분리.</p>
+    </div>
+    <div class="pattern-card">
+      <div class="num">5</div>
+      <h4>지연 평가</h4>
+      <p>dirty 플래그 기반. 여러 refresh() → 한 번의 렌더링. 불필요한 렌더 방지.</p>
+    </div>
+    <div class="pattern-card">
+      <div class="num">6</div>
+      <h4>불변 캐싱</h4>
+      <p>Strip, Styles는 불변(immutable). 공격적 캐싱으로 성능 확보.</p>
+    </div>
+    <div class="pattern-card">
+      <div class="num">7</div>
+      <h4>스레드 안전</h4>
+      <p>단일 asyncio 이벤트 루프. 백그라운드 스레드는 call_from_thread()로 진입.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── 12. Data Flow ── -->
+<section id="dataflow">
+  <h2><span class="sec-num">12</span>전체 데이터 흐름</h2>
+
+  <div class="diagram"><span class="hl">User Input</span> (Keyboard / Mouse)
+      │
+      ▼
+<span class="wr">Driver</span> (플랫폼별 스레드)
+      │  ReadConsoleInputW (Win) / os.read (Linux)
+      ▼
+<span class="fn">process_message()</span>  좌표 조정, 마우스 버튼 상태 추적
+      │
+      ▼
+<span class="fn">send_message()</span>  asyncio.run_coroutine_threadsafe
+      │
+      ▼
+<span class="ac">App._post_message()</span>  → <span class="ac">_message_queue</span>에 삽입
+      │
+      ▼
+<span class="ac">MessagePump._process_messages_loop()</span>  디큐
+      │
+      ▼
+<span class="fn">_dispatch_message()</span>  핸들러 라우팅
+      │
+      ▼
+<span class="fn">_get_dispatch_methods()</span>  @on() 또는 on_<name> 탐색
+      │
+      ▼
+<span class="pk">Handler method</span>  (on_key, on_mouse_move 등)
+      │
+      ▼
+<span class="fn">refresh()</span>  dirty regions 마킹
+      │
+      ▼
+<span class="cy">Idle event</span> 삽입 (큐 비었을 때)
+      │
+      ▼
+  ┌─────────── <span class="hl">Render Pipeline</span> ───────────┐
+  │ Widget.render() → Visual              │
+  │ → render_strips() → list[Strip]       │
+  │ → CSS 스타일/필터 적용                │
+  │ → Compositor 합성                     │
+  │ → CompositorUpdate                    │
+  └───────────────────────────────────────┘
+      │
+      ▼
+<span class="wr">Driver.write()</span>  ANSI 이스케이프 시퀀스 출력
+      │
+      ▼
+<span class="hl">Terminal Display</span></div>
+</section>
+
+</div>
+
+<!-- ════════════════════ FOOTER ════════════════════ -->
+<footer>
+  <p>Textual 프레임워크 아키텍처 분석 &mdash; Terminalist 프로젝트 참조 문서</p>
+  <p>Based on <a href="https://github.com/Textualize/textual">Textualize/textual</a> source code analysis</p>
+</footer>
+
+</body>
+</html>

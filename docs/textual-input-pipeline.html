@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Textual 입력 파이프라인 분석</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface2: #1c2333;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --orange: #d29922;
+    --red: #f85149;
+    --purple: #bc8cff;
+    --pink: #f778ba;
+    --cyan: #39d2c0;
+    --yellow: #e3b341;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Segoe UI', -apple-system, 'Noto Sans KR', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  .hero {
+    text-align: center;
+    padding: 80px 20px 60px;
+    background: linear-gradient(180deg, #0d1117 0%, #101820 100%);
+    position: relative; overflow: hidden;
+  }
+  .hero::before {
+    content: '';
+    position: absolute; top: -50%; left: -50%;
+    width: 200%; height: 200%;
+    background: radial-gradient(circle at 50% 80%, rgba(247,120,186,.07) 0%, transparent 50%);
+    pointer-events: none;
+  }
+  .hero h1 { font-size: 3.2rem; font-weight: 800; letter-spacing: -1px; margin-bottom: 12px; }
+  .hero h1 .accent { color: var(--pink); }
+  .hero .tagline { font-size: 1.25rem; color: var(--text-dim); max-width: 750px; margin: 0 auto 30px; }
+  .hero-badges { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .badge { display: inline-flex; align-items: center; gap: 6px; background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 6px 16px; font-size: .85rem; color: var(--text-dim); }
+  .badge .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .badge .dot.green { background: var(--green); }
+  .badge .dot.blue { background: var(--accent); }
+  .badge .dot.orange { background: var(--orange); }
+  .badge .dot.pink { background: var(--pink); }
+
+  .toc { max-width: 1100px; margin: 0 auto; padding: 40px 20px 20px; }
+  .toc h2 { font-size: 1.1rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 2px; margin-bottom: 20px; text-align: center; }
+  .toc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+  .toc-item { display: block; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 18px; text-decoration: none; color: var(--text); font-size: .95rem; transition: border-color .2s, background .2s; }
+  .toc-item:hover { border-color: var(--pink); background: var(--surface2); }
+  .toc-item .num { color: var(--pink); font-weight: 700; margin-right: 8px; }
+
+  .container { max-width: 1100px; margin: 0 auto; padding: 0 20px 80px; }
+
+  section { margin-top: 60px; }
+  section > h2 { font-size: 1.9rem; font-weight: 700; margin-bottom: 8px; padding-bottom: 12px; border-bottom: 2px solid var(--border); }
+  section > h2 .sec-num { color: var(--pink); margin-right: 10px; }
+
+  h3 { font-size: 1.3rem; margin-top: 32px; margin-bottom: 12px; color: var(--green); }
+  h4 { font-size: 1.05rem; margin-top: 24px; margin-bottom: 8px; color: var(--purple); }
+  p { margin-bottom: 14px; color: var(--text); }
+
+  ul, ol { margin: 0 0 16px 24px; }
+  li { margin-bottom: 6px; }
+
+  code { background: var(--surface2); border: 1px solid var(--border); border-radius: 4px; padding: 2px 7px; font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: .88em; color: var(--cyan); }
+  pre { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 20px 24px; overflow-x: auto; margin: 16px 0; font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: .9rem; line-height: 1.6; color: var(--text); }
+  pre code { background: none; border: none; padding: 0; color: inherit; font-size: inherit; }
+  .kw { color: var(--purple); } .fn { color: var(--accent); } .str { color: var(--cyan); } .cmt { color: var(--text-dim); } .cls { color: var(--green); } .arg { color: var(--orange); } .sym { color: var(--pink); }
+
+  kbd { display: inline-block; background: linear-gradient(180deg, #2d333b 0%, #22272e 100%); border: 1px solid #444c56; border-bottom: 3px solid #373e47; border-radius: 5px; padding: 2px 8px; font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: .85em; color: var(--text); white-space: nowrap; box-shadow: 0 1px 2px rgba(0,0,0,.3); }
+
+  .key-table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: .92rem; }
+  .key-table th { text-align: left; background: var(--surface2); color: var(--accent); padding: 10px 14px; border-bottom: 2px solid var(--border); font-weight: 600; }
+  .key-table td { padding: 9px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .key-table tr:hover td { background: rgba(88,166,255,.04); }
+  .key-table .key-col { white-space: nowrap; color: var(--cyan); font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: .88em; }
+
+  .info-box { background: var(--surface); border-left: 4px solid var(--accent); border-radius: 0 10px 10px 0; padding: 16px 20px; margin: 20px 0; }
+  .info-box.tip { border-left-color: var(--green); }
+  .info-box.warn { border-left-color: var(--orange); }
+  .info-box.danger { border-left-color: var(--red); }
+  .info-box .label { font-weight: 700; font-size: .85rem; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
+  .info-box.tip .label { color: var(--green); }
+  .info-box.warn .label { color: var(--orange); }
+  .info-box.danger .label { color: var(--red); }
+  .info-box .label.blue { color: var(--accent); }
+
+  .diagram { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px; margin: 20px 0; font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: .85rem; line-height: 1.5; overflow-x: auto; white-space: pre; color: var(--text-dim); }
+  .diagram .hl { color: var(--green); font-weight: 700; }
+  .diagram .ac { color: var(--accent); }
+  .diagram .wr { color: var(--orange); }
+  .diagram .pk { color: var(--pink); }
+  .diagram .cy { color: var(--cyan); }
+  .diagram .rd { color: var(--red); }
+
+  .compare-table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: .92rem; }
+  .compare-table th { background: var(--surface2); color: var(--text); padding: 12px 14px; border-bottom: 2px solid var(--border); text-align: left; }
+  .compare-table td { padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .compare-table .yes { color: var(--green); font-weight: 600; }
+  .compare-table .no { color: var(--red); font-weight: 600; }
+  .compare-table .partial { color: var(--orange); font-weight: 600; }
+
+  .pipeline-step {
+    display: flex; align-items: flex-start; gap: 16px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 20px 24px; margin: 12px 0; transition: border-color .2s;
+  }
+  .pipeline-step:hover { border-color: var(--pink); }
+  .pipeline-step .step-num {
+    flex-shrink: 0; width: 36px; height: 36px; line-height: 36px; text-align: center;
+    background: var(--surface2); border: 2px solid var(--pink); border-radius: 50%;
+    font-size: .9rem; font-weight: 800; color: var(--pink);
+  }
+  .pipeline-step .step-body { flex: 1; }
+  .pipeline-step .step-title { font-weight: 700; color: var(--text); margin-bottom: 4px; }
+  .pipeline-step .step-desc { font-size: .9rem; color: var(--text-dim); }
+
+  .byte-table td.byte { font-family: 'Cascadia Code', monospace; color: var(--pink); font-weight: 600; }
+  .byte-table td.event { font-family: 'Cascadia Code', monospace; color: var(--green); }
+
+  footer { text-align: center; padding: 40px 20px; color: var(--text-dim); font-size: .85rem; border-top: 1px solid var(--border); }
+  footer a { color: var(--accent); text-decoration: none; }
+  footer a:hover { text-decoration: underline; }
+
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: #484f58; }
+
+  @media (max-width: 700px) {
+    .hero h1 { font-size: 2.2rem; }
+    .toc-grid { grid-template-columns: 1fr; }
+    .pipeline-step { flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ════════════════════ HERO ════════════════════ -->
+<div class="hero">
+  <h1><span class="accent">입력 파이프라인</span> 분석</h1>
+  <p class="tagline">
+    사용자가 키를 누르는 순간부터 Textual 위젯 핸들러에 도착하기까지의 전체 경로.
+    Windows 환경에서 <kbd>Ctrl</kbd>+키 조합 문제의 원인과 해결 방향을 추적합니다.
+  </p>
+  <div class="hero-badges">
+    <span class="badge"><span class="dot pink"></span> Ctrl+키 심층 분석</span>
+    <span class="badge"><span class="dot blue"></span> Win32 API &rarr; XTermParser</span>
+    <span class="badge"><span class="dot orange"></span> Kitty 프로토콜</span>
+    <span class="badge"><span class="dot green"></span> ANSI 시퀀스 매핑</span>
+  </div>
+</div>
+
+<!-- ════════════════════ TOC ════════════════════ -->
+<nav class="toc">
+  <h2>목차</h2>
+  <div class="toc-grid">
+    <a class="toc-item" href="#overview"><span class="num">01</span>전체 흐름 개요</a>
+    <a class="toc-item" href="#windows"><span class="num">02</span>Windows 드라이버 상세</a>
+    <a class="toc-item" href="#parser"><span class="num">03</span>XTermParser 파서</a>
+    <a class="toc-item" href="#ctrl-key"><span class="num">04</span>Ctrl+키 처리 방식</a>
+    <a class="toc-item" href="#dispatch"><span class="num">05</span>키 이벤트 디스패치</a>
+    <a class="toc-item" href="#mouse"><span class="num">06</span>마우스 &amp; 붙여넣기</a>
+    <a class="toc-item" href="#kitty"><span class="num">07</span>Kitty 프로토콜 지원</a>
+    <a class="toc-item" href="#problems"><span class="num">08</span>Windows 입력 문제 분석</a>
+    <a class="toc-item" href="#debug"><span class="num">09</span>디버깅 방법</a>
+    <a class="toc-item" href="#terminalist"><span class="num">10</span>Terminalist 함의</a>
+  </div>
+</nav>
+
+<div class="container">
+
+<!-- ── 1. Overview ── -->
+<section id="overview">
+  <h2><span class="sec-num">01</span>전체 흐름 개요</h2>
+  <p>사용자가 키를 누르면 아래 경로를 거쳐 최종적으로 위젯 핸들러에 도달합니다.</p>
+
+  <div class="diagram"><span class="hl">[사용자 키 입력]</span>
+      │
+      ▼
+<span class="wr">[드라이버 레이어]</span> — 플랫폼별 raw 입력 읽기
+      │                     │
+  <span class="pk">[Windows]</span>              <span class="ac">[Linux/macOS]</span>
+  Win32 API              os.read(stdin)
+  ReadConsoleInputW()    UTF-8 디코딩
+  KEY_EVENT_RECORD
+  → Unicode char 추출
+  → UTF-16 인코딩 처리
+      │                     │
+      └─────────┬───────────┘
+                │
+                ▼
+<span class="cy">[XTermParser]</span> — 이스케이프 시퀀스 파싱
+      │
+  ┌───┴───────────────────────────────────┐
+  │ <span class="hl">1.</span> Kitty 프로토콜 매칭               │  \x1b[97;5u → <span class="hl">"ctrl+a"</span>
+  │ <span class="ac">2.</span> ANSI 시퀀스 테이블 매칭            │  \x01 → <span class="ac">"ctrl+a"</span>
+  │ <span class="pk">3.</span> 단일 문자 처리                    │  'a' → <span class="pk">"a"</span>
+  │ <span class="wr">4.</span> reissue_sequence_as_keys (폴백)   │
+  └───────────────────────────────────────┘
+      │
+      ▼
+<span class="hl">[events.Key 생성]</span>
+  Key(key=<span class="str">"ctrl+a"</span>, character=<span class="str">None</span>)
+      │
+      ▼
+<span class="ac">[App._post_message()]</span> — asyncio 큐에 삽입
+      │
+      ▼
+<span class="pk">[Screen._forward_event()]</span> — 포커스된 위젯으로 전달
+      │
+  ┌───┴───────────────────────────────────┐
+  │ 1. <span class="cy">key_&lt;name&gt;</span> 핸들러 탐색             │
+  │ 2. <span class="cy">on_key</span> 핸들러                       │
+  │ 3. <span class="cy">바인딩 매칭</span> (Binding)              │
+  │ 4. <span class="cy">버블링</span> (위젯 → Screen → App)       │
+  └───────────────────────────────────────┘</div>
+</section>
+
+<!-- ── 2. Windows Driver ── -->
+<section id="windows">
+  <h2><span class="sec-num">02</span>Windows 드라이버 상세</h2>
+
+  <h3>콘솔 모드 설정</h3>
+  <p>Textual이 Windows에서 시작할 때 가장 먼저 하는 일입니다.</p>
+<pre><code><span class="cmt"># win32.py:158-180 — enable_application_mode()</span>
+
+<span class="cmt"># stdin: VT 입력 모드 활성화</span>
+<span class="cmt"># → Windows가 키 입력을 VT100 이스케이프 시퀀스로 변환</span>
+<span class="fn">set_console_mode</span>(terminal_in, <span class="arg">ENABLE_VIRTUAL_TERMINAL_INPUT</span>)  <span class="cmt"># 0x0200</span>
+
+<span class="cmt"># stdout: VT 출력 처리 활성화</span>
+<span class="cmt"># → ANSI 이스케이프 시퀀스를 해석해서 출력</span>
+<span class="fn">set_console_mode</span>(terminal_out, current | <span class="arg">ENABLE_VIRTUAL_TERMINAL_PROCESSING</span>)</code></pre>
+
+  <div class="info-box danger">
+    <div class="label">핵심 주의점</div>
+    <p>stdin에 <code>ENABLE_VIRTUAL_TERMINAL_INPUT</code>을 설정할 때 <strong>기존 모드를 OR 하지 않고 덮어씁니다</strong>. 즉 ENABLE_PROCESSED_INPUT, ENABLE_LINE_INPUT 등이 모두 꺼집니다. 이것은 raw 모드 진입을 위한 의도된 동작입니다.</p>
+  </div>
+
+  <h3>EventMonitor &mdash; 입력 읽기 스레드</h3>
+<pre><code><span class="cmt"># win32.py:228-292 — EventMonitor.run()</span>
+
+<span class="kw">while not</span> exit_requested():
+    <span class="cmt"># 1. 타임아웃된 시퀀스 방출</span>
+    <span class="kw">for</span> event <span class="kw">in</span> parser.<span class="fn">tick</span>():
+        self.<span class="fn">process_event</span>(event)
+
+    <span class="cmt"># 2. Win32 API로 콘솔 이벤트 대기 (100ms 타임아웃)</span>
+    <span class="kw">if</span> <span class="fn">wait_for_handles</span>([hIn], <span class="str">100</span>) <span class="kw">is None</span>:
+        <span class="kw">continue</span>
+
+    <span class="cmt"># 3. ReadConsoleInputW()로 INPUT_RECORD 배열 읽기</span>
+    <span class="fn">ReadConsoleInputW</span>(hIn, byref(input_records), MAX_EVENTS, byref(read_count))
+
+    <span class="kw">for</span> input_record <span class="kw">in</span> read_input_records:
+        <span class="kw">if</span> event_type == KEY_EVENT:
+            key_event = input_record.Event.KeyEvent
+            key = key_event.uChar.UnicodeChar
+
+            <span class="kw">if</span> key_event.bKeyDown:
+                <span class="cmt"># ★ 수식키 단독 입력 필터링</span>
+                <span class="kw">if</span> key_event.dwControlKeyState <span class="kw">and</span> key_event.wVirtualKeyCode == <span class="str">0</span>:
+                    <span class="kw">continue</span>
+                append_key(key)
+
+    <span class="kw">if</span> keys:
+        <span class="cmt"># 4. UTF-16 서로게이트 페어 처리 (이슈 #3178)</span>
+        data = <span class="str">""</span>.join(keys).encode(<span class="str">"utf-16"</span>, <span class="str">"surrogatepass"</span>).decode(<span class="str">"utf-16"</span>)
+        <span class="kw">for</span> event <span class="kw">in</span> parser.<span class="fn">feed</span>(data):
+            self.<span class="fn">process_event</span>(event)</code></pre>
+
+  <h3>실제 Ctrl+A 키 입력 시 경로</h3>
+  <div class="pipeline-step">
+    <div class="step-num">1</div>
+    <div class="step-body">
+      <div class="step-title">사용자가 <kbd>Ctrl</kbd>+<kbd>A</kbd>를 누름</div>
+      <div class="step-desc">Windows Console이 KEY_EVENT_RECORD를 생성합니다.</div>
+    </div>
+  </div>
+  <div class="pipeline-step">
+    <div class="step-num">2</div>
+    <div class="step-body">
+      <div class="step-title">KEY_EVENT_RECORD 필드값</div>
+      <div class="step-desc">
+        <code>bKeyDown = True</code><br>
+        <code>wVirtualKeyCode = 0x41</code> (= 'A')<br>
+        <code>dwControlKeyState = LEFT_CTRL_PRESSED</code><br>
+        <code>uChar.UnicodeChar = '\x01'</code>
+      </div>
+    </div>
+  </div>
+  <div class="pipeline-step">
+    <div class="step-num">3</div>
+    <div class="step-body">
+      <div class="step-title">필터 통과</div>
+      <div class="step-desc"><code>wVirtualKeyCode == 0x41 != 0</code> 이므로 필터에 걸리지 않음. <code>'\x01'</code>이 keys에 추가됩니다.</div>
+    </div>
+  </div>
+  <div class="pipeline-step">
+    <div class="step-num">4</div>
+    <div class="step-body">
+      <div class="step-title">XTermParser.feed('\x01')</div>
+      <div class="step-desc"><code>ANSI_SEQUENCES_KEYS['\x01']</code> → <code>(Keys.ControlA,)</code><br>→ <code>events.Key("ctrl+a", '\x01')</code> 이벤트 생성</div>
+    </div>
+  </div>
+</section>
+
+<!-- ── 3. XTermParser ── -->
+<section id="parser">
+  <h2><span class="sec-num">03</span>XTermParser 파서</h2>
+  <p>Generator 기반 비동기 파서입니다. <code>read1(timeout)</code>으로 한 문자씩 읽으며 이스케이프 시퀀스를 조립합니다.</p>
+
+  <h3>파싱 전략</h3>
+<pre><code><span class="kw">def</span> <span class="fn">parse</span>(self, token_callback):
+    <span class="kw">while not</span> self.is_eof:
+        character = <span class="kw">yield</span> <span class="fn">read1</span>()
+
+        <span class="kw">if</span> character != ESC:
+            <span class="cmt"># 비-ESC 문자 → 즉시 키 이벤트</span>
+            <span class="kw">for</span> event <span class="kw">in</span> <span class="fn">sequence_to_key_events</span>(character):
+                <span class="fn">on_key_token</span>(event)
+            <span class="kw">continue</span>
+
+        <span class="cmt"># ESC로 시작 → 이스케이프 시퀀스일 수 있음</span>
+        sequence = ESC
+        <span class="kw">while True</span>:
+            <span class="kw">try</span>:
+                new_char = <span class="kw">yield</span> <span class="fn">read1</span>(<span class="arg">ESCAPE_DELAY</span>)  <span class="cmt"># 0.1초 타임아웃</span>
+            <span class="kw">except</span> <span class="cls">ParseTimeout</span>:
+                <span class="cmt"># 타임아웃 → 단독 ESC 키</span>
+                <span class="fn">send_sequence</span>()
+                <span class="kw">break</span>
+
+            sequence += new_char
+            <span class="cmt"># 시퀀스 매칭 시도 (최대 32자)</span>
+            key_events = list(<span class="fn">sequence_to_key_events</span>(sequence))
+            <span class="kw">if</span> key_events:
+                <span class="kw">for</span> event <span class="kw">in</span> key_events:
+                    <span class="fn">on_key_token</span>(event)
+                <span class="kw">break</span></code></pre>
+
+  <h3>3단계 키 매칭 (_sequence_to_key_events)</h3>
+
+  <div class="pipeline-step">
+    <div class="step-num">1</div>
+    <div class="step-body">
+      <div class="step-title">Kitty 프로토콜 (현대적)</div>
+      <div class="step-desc">
+        정규식: <code>\x1b\[(?:(\d+)(?:;(\d+))?)?([u~ABCDEFHPQRS])</code><br>
+        예: <code>\x1b[97;5u</code> → number=97(='a'), modifiers=5(ctrl), end='u'<br>
+        → <strong>"ctrl+a"</strong>
+      </div>
+    </div>
+  </div>
+  <div class="pipeline-step">
+    <div class="step-num">2</div>
+    <div class="step-body">
+      <div class="step-title">ANSI 시퀀스 테이블 (레거시)</div>
+      <div class="step-desc">
+        <code>ANSI_SEQUENCES_KEYS</code> 딕셔너리에서 직접 매칭.<br>
+        예: <code>\x01</code> → <code>Keys.ControlA</code>, &nbsp; <code>\x1b[1;5A</code> → <code>Keys.ControlUp</code>
+      </div>
+    </div>
+  </div>
+  <div class="pipeline-step">
+    <div class="step-num">3</div>
+    <div class="step-body">
+      <div class="step-title">단일 문자 처리 (폴백)</div>
+      <div class="step-desc">
+        <code>unicodedata.name()</code>으로 문자 이름 조회.<br>
+        예: <code>'a'</code> → <code>"a"</code>, &nbsp; <code>'/'</code> → <code>"solidus"</code>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── 4. Ctrl+Key ── -->
+<section id="ctrl-key">
+  <h2><span class="sec-num">04</span>Ctrl+키 조합 처리 방식</h2>
+
+  <h3>Ctrl+영문자 (A-Z) 매핑</h3>
+  <p>Ctrl+영문자는 ASCII 컨트롤 문자(0x01-0x1A)로 인코딩됩니다. 이것은 터미널의 가장 기본적인 동작입니다.</p>
+
+  <table class="key-table byte-table">
+    <tr><th>키</th><th>바이트</th><th>Textual 이벤트</th><th>소스 위치</th></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>A</kbd></td><td class="byte">\x01</td><td class="event">ctrl+a</td><td>_ansi_sequences.py:24</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>B</kbd></td><td class="byte">\x02</td><td class="event">ctrl+b</td><td>_ansi_sequences.py:25</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>C</kbd></td><td class="byte">\x03</td><td class="event">ctrl+c</td><td>_ansi_sequences.py:26</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>D</kbd></td><td class="byte">\x04</td><td class="event">ctrl+d</td><td>_ansi_sequences.py:27</td></tr>
+    <tr><td>...</td><td>...</td><td>...</td><td>...</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd></td><td class="byte">\x1a</td><td class="event">ctrl+z</td><td>_ansi_sequences.py:49</td></tr>
+  </table>
+
+  <h3>구분 불가능한 키 조합 (레거시 모드)</h3>
+  <div class="info-box danger">
+    <div class="label">중요: 같은 바이트를 생성하는 키들</div>
+    <p>레거시 터미널 입력에서는 아래 키 조합들이 <strong>동일한 바이트</strong>를 생성하여 구분할 수 없습니다.</p>
+  </div>
+
+  <table class="key-table">
+    <tr><th>바이트</th><th>키 조합 1</th><th>키 조합 2</th><th>Textual 처리</th></tr>
+    <tr>
+      <td class="key-col">\x08</td>
+      <td><kbd>Ctrl</kbd>+<kbd>H</kbd></td>
+      <td><kbd>Backspace</kbd></td>
+      <td><code>backspace</code>로 통일</td>
+    </tr>
+    <tr>
+      <td class="key-col">\x09</td>
+      <td><kbd>Ctrl</kbd>+<kbd>I</kbd></td>
+      <td><kbd>Tab</kbd></td>
+      <td><code>tab</code>으로 통일</td>
+    </tr>
+    <tr>
+      <td class="key-col">\x0d</td>
+      <td><kbd>Ctrl</kbd>+<kbd>M</kbd></td>
+      <td><kbd>Enter</kbd></td>
+      <td><code>enter</code>로 통일</td>
+    </tr>
+    <tr>
+      <td class="key-col">\x1b</td>
+      <td><kbd>Ctrl</kbd>+<kbd>[</kbd></td>
+      <td><kbd>Escape</kbd></td>
+      <td><code>escape</code>로 통일</td>
+    </tr>
+  </table>
+
+  <h3>KEY_NAME_REPLACEMENTS 치환 테이블</h3>
+<pre><code><span class="cmt"># keys.py — 내부적으로 이 치환이 적용됨</span>
+KEY_NAME_REPLACEMENTS = {
+    <span class="str">"ctrl+h"</span>: <span class="str">"backspace"</span>,    <span class="cmt"># Ctrl+H → Backspace로 통일</span>
+    <span class="str">"ctrl+i"</span>: <span class="str">"tab"</span>,          <span class="cmt"># Ctrl+I → Tab으로 통일</span>
+    <span class="str">"ctrl+m"</span>: <span class="str">"enter"</span>,        <span class="cmt"># Ctrl+M → Enter로 통일</span>
+    ...
+}</code></pre>
+
+  <h3>Kitty 프로토콜이 해결하는 것</h3>
+  <p>Kitty 프로토콜(<code>\x1b[&gt;1u</code>)이 활성화되면 모든 키에 고유한 시퀀스가 부여됩니다:</p>
+
+  <table class="key-table">
+    <tr><th>키</th><th>레거시</th><th>Kitty 프로토콜</th><th>구분 가능?</th></tr>
+    <tr>
+      <td><kbd>Ctrl</kbd>+<kbd>A</kbd></td>
+      <td class="key-col">\x01</td>
+      <td class="key-col">\x1b[97;5u</td>
+      <td>둘 다 가능</td>
+    </tr>
+    <tr>
+      <td><kbd>Ctrl</kbd>+<kbd>I</kbd></td>
+      <td class="key-col">\x09 (= Tab)</td>
+      <td class="key-col">\x1b[105;5u</td>
+      <td style="color: var(--green); font-weight: 700;">Kitty만 가능!</td>
+    </tr>
+    <tr>
+      <td><kbd>Tab</kbd></td>
+      <td class="key-col">\x09 (= Ctrl+I)</td>
+      <td class="key-col">\x1b[9u</td>
+      <td style="color: var(--green); font-weight: 700;">Kitty만 가능!</td>
+    </tr>
+    <tr>
+      <td><kbd>Ctrl</kbd>+<kbd>M</kbd></td>
+      <td class="key-col">\x0d (= Enter)</td>
+      <td class="key-col">\x1b[109;5u</td>
+      <td style="color: var(--green); font-weight: 700;">Kitty만 가능!</td>
+    </tr>
+  </table>
+
+  <div class="info-box warn">
+    <div class="label">BUT: 지원 여부가 핵심</div>
+    <p>Textual은 <code>\x1b[&gt;1u</code>를 보내서 Kitty 프로토콜 활성화를 시도하지만, <strong>터미널이 지원하지 않으면 무시</strong>됩니다. VSCode 터미널(xterm.js 기반)은 현재 미지원.</p>
+  </div>
+</section>
+
+<!-- ── 5. Dispatch ── -->
+<section id="dispatch">
+  <h2><span class="sec-num">05</span>키 이벤트 디스패치</h2>
+
+  <h3>dispatch_key &mdash; 핸들러 탐색</h3>
+<pre><code><span class="cmt"># _dispatch_key.py</span>
+<span class="kw">async def</span> <span class="fn">dispatch_key</span>(node: DOMNode, event: events.Key) -> bool:
+    <span class="cmt"># event.name_aliases에서 모든 별명 시도</span>
+    <span class="cmt"># 예: "ctrl+i" → ["ctrl+i", "tab"]</span>
+    <span class="kw">for</span> key_method_name <span class="kw">in</span> event.name_aliases:
+        <span class="cmt"># key_ctrl_i() 또는 key_tab() 탐색</span>
+        key_method = <span class="fn">getattr</span>(node, f<span class="str">"key_{key_method_name}"</span>, <span class="kw">None</span>)
+        <span class="kw">if</span> key_method:
+            handled = (<span class="kw">await</span> <span class="fn">invoke</span>(key_method, event)) <span class="kw">is not False</span></code></pre>
+
+  <h3>바인딩 해석 순서</h3>
+  <ol>
+    <li>포커스된 위젯의 바인딩</li>
+    <li>부모 위젯들의 바인딩 (버블링)</li>
+    <li>Screen의 바인딩</li>
+    <li>App의 바인딩</li>
+    <li><code>priority=True</code>인 바인딩이 항상 우선</li>
+  </ol>
+
+  <h3>실제 바인딩 예시</h3>
+<pre><code><span class="kw">from</span> textual.app <span class="kw">import</span> App
+<span class="kw">from</span> textual.binding <span class="kw">import</span> Binding
+
+<span class="kw">class</span> <span class="cls">TermApp</span>(App):
+    BINDINGS = [
+        <span class="cmt"># 단일 키</span>
+        Binding(<span class="str">"q"</span>, <span class="str">"quit"</span>, <span class="str">"종료"</span>),
+
+        <span class="cmt"># 수식키 조합</span>
+        Binding(<span class="str">"ctrl+b"</span>, <span class="str">"prefix"</span>, <span class="str">"Prefix"</span>, priority=<span class="kw">True</span>),
+
+        <span class="cmt"># 복합 키 (쉼표로 구분 → 두 바인딩 생성)</span>
+        Binding(<span class="str">"j,down"</span>, <span class="str">"cursor_down"</span>, <span class="str">"아래"</span>),
+
+        <span class="cmt"># ID 기반 (키맵으로 오버라이드 가능)</span>
+        Binding(<span class="str">"ctrl+s"</span>, <span class="str">"save"</span>, <span class="str">"저장"</span>, id=<span class="str">"save"</span>),
+    ]</code></pre>
+</section>
+
+<!-- ── 6. Mouse & Paste ── -->
+<section id="mouse">
+  <h2><span class="sec-num">06</span>마우스 &amp; 붙여넣기</h2>
+
+  <h3>마우스 활성화 시퀀스</h3>
+  <table class="key-table">
+    <tr><th>시퀀스</th><th>의미</th></tr>
+    <tr><td class="key-col">\x1b[?1000h</td><td>SET_VT200_MOUSE &mdash; 기본 마우스 보고 활성화</td></tr>
+    <tr><td class="key-col">\x1b[?1003h</td><td>SET_ANY_EVENT_MOUSE &mdash; 모든 마우스 이벤트 (이동 포함)</td></tr>
+    <tr><td class="key-col">\x1b[?1015h</td><td>SET_VT200_HIGHLIGHT_MOUSE</td></tr>
+    <tr><td class="key-col">\x1b[?1006h</td><td>SET_SGR_EXT_MODE_MOUSE &mdash; SGR 확장 좌표 (넓은 터미널 지원)</td></tr>
+  </table>
+
+  <h3>SGR 마우스 이벤트 포맷</h3>
+<pre><code><span class="cmt"># 포맷: \x1b[&lt;buttons;x;yM (누름) 또는 \x1b[&lt;buttons;x;ym (뗌)</span>
+
+<span class="cmt"># buttons 비트필드:</span>
+<span class="cmt"># bit 0-1: 버튼 번호 (0=왼쪽, 1=가운데, 2=오른쪽)</span>
+<span class="cmt"># bit 2:   Shift 누름</span>
+<span class="cmt"># bit 3:   Alt 누름</span>
+<span class="cmt"># bit 4:   Ctrl 누름</span>
+<span class="cmt"># bit 5:   이동 중 (mouse move)</span>
+<span class="cmt"># bit 6:   스크롤 (0=위, 1=아래, 2=왼쪽, 3=오른쪽)</span></code></pre>
+
+  <h3>브라켓 페이스트</h3>
+<pre><code><span class="cmt"># 활성화: \x1b[?2004h</span>
+<span class="cmt"># 페이스트 시작: \x1b[200~</span>
+<span class="cmt"># 페이스트 종료: \x1b[201~</span>
+
+<span class="cmt"># XTermParser가 시작~종료 사이의 모든 문자를 버퍼링하고</span>
+<span class="cmt"># events.Paste(text) 이벤트를 한 번에 방출</span>
+<span class="cmt"># → 대량 텍스트 붙여넣기 시 키 이벤트 폭풍 방지</span></code></pre>
+</section>
+
+<!-- ── 7. Kitty Protocol ── -->
+<section id="kitty">
+  <h2><span class="sec-num">07</span>Kitty 프로토콜 지원 현황</h2>
+  <p>Textual은 시작 시 <code>\x1b[&gt;1u</code>를 보내 Kitty 키보드 프로토콜 활성화를 시도합니다.</p>
+
+  <table class="compare-table">
+    <tr>
+      <th>터미널</th>
+      <th>Kitty 프로토콜</th>
+      <th>비고</th>
+    </tr>
+    <tr>
+      <td>Kitty</td>
+      <td class="yes">완전 지원</td>
+      <td>프로토콜 원조</td>
+    </tr>
+    <tr>
+      <td>WezTerm</td>
+      <td class="yes">지원</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>Ghostty</td>
+      <td class="yes">지원</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>Windows Terminal</td>
+      <td class="partial">부분 지원</td>
+      <td>v1.22+ 일부 기능</td>
+    </tr>
+    <tr>
+      <td>VSCode 터미널</td>
+      <td class="no">미지원</td>
+      <td>xterm.js 기반, 레거시만</td>
+    </tr>
+    <tr>
+      <td>PowerShell ISE</td>
+      <td class="no">해당없음</td>
+      <td>가상 터미널 아님</td>
+    </tr>
+    <tr>
+      <td>cmd.exe</td>
+      <td class="partial">VT 입력만</td>
+      <td>ConPTY 경유</td>
+    </tr>
+    <tr>
+      <td>ConEmu / Cmder</td>
+      <td class="partial">제한적</td>
+      <td>VT 입력 지원 수준 다양</td>
+    </tr>
+  </table>
+
+  <h3>Kitty 수식키 비트 인코딩</h3>
+<pre><code><span class="cmt"># modifier_bits = int(modifiers) - 1</span>
+<span class="cmt">#</span>
+<span class="cmt"># bit 0 = Shift     (1)</span>
+<span class="cmt"># bit 1 = Alt       (2)</span>
+<span class="cmt"># bit 2 = Ctrl      (4)</span>
+<span class="cmt"># bit 3 = Super     (8)</span>
+<span class="cmt"># bit 4 = Hyper     (16)</span>
+<span class="cmt"># bit 5 = Meta      (32)</span>
+<span class="cmt">#</span>
+<span class="cmt"># 예: Ctrl+Shift+A</span>
+<span class="cmt"># → \x1b[97;6u  (modifiers = 1 + Shift(1) + Ctrl(4) = 6)</span>
+<span class="cmt"># → key_tokens = ["ctrl", "shift", "a"]</span>
+<span class="cmt"># → event name = "ctrl+shift+a"</span></code></pre>
+</section>
+
+<!-- ── 8. Problems ── -->
+<section id="problems">
+  <h2><span class="sec-num">08</span>Windows 환경 입력 문제 분석</h2>
+
+  <h3>문제 1: Kitty 프로토콜 미지원 터미널</h3>
+  <div class="info-box danger">
+    <div class="label">VSCode 터미널</div>
+    <p>VSCode의 통합 터미널은 xterm.js 기반입니다. <code>\x1b[&gt;1u</code>를 보내도 <strong>무시</strong>됩니다. Ctrl+키는 레거시 컨트롤 문자(<code>\x01</code>~<code>\x1a</code>)로만 전달됩니다.</p>
+  </div>
+
+  <h3>문제 2: VSCode 키 가로채기</h3>
+  <p>VSCode가 일부 <kbd>Ctrl</kbd>+키 조합을 자체 단축키로 가로채서 터미널까지 전달하지 않습니다:</p>
+  <ul>
+    <li><kbd>Ctrl</kbd>+<kbd>K</kbd> &mdash; VSCode 복합 단축키 prefix</li>
+    <li><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> &mdash; Command Palette</li>
+    <li><kbd>Ctrl</kbd>+<kbd>`</kbd> &mdash; 터미널 토글</li>
+    <li><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>~</kbd> &mdash; 새 터미널</li>
+  </ul>
+  <p><code>terminal.integrated.commandsToSkipShell</code> 설정으로 일부 조정 가능.</p>
+
+  <h3>문제 3: ESC 타이밍</h3>
+<pre><code><span class="cmt"># _xterm_parser.py:232</span>
+new_character = <span class="kw">yield</span> <span class="fn">read1</span>(<span class="arg">ESCAPE_DELAY</span>)  <span class="cmt"># 기본 0.1초</span></code></pre>
+  <p>네트워크 지연이 있는 환경이나 느린 터미널에서 이스케이프 시퀀스가 쪼개져 도착하면, <strong>시퀀스를 ESC + 개별 문자들로 잘못 해석</strong>할 수 있습니다.</p>
+
+  <h3>문제 4: Windows ESC 이중 전송</h3>
+<pre><code><span class="cmt"># _ansi_sequences.py:51-53</span>
+<span class="str">"\x1b\x1b"</span>: (Keys.Escape,)
+<span class="cmt"># Windows가 ESC를 한 번 누르면 \x1b\x1b를 보내는 경우</span>
+<span class="cmt"># → Textual은 이것을 단일 ESC로 처리</span></code></pre>
+
+  <h3>문제 5: EventMonitor 필터</h3>
+<pre><code><span class="cmt"># win32.py:273-277</span>
+<span class="kw">if</span> key_event.dwControlKeyState <span class="kw">and</span> key_event.wVirtualKeyCode == <span class="str">0</span>:
+    <span class="kw">continue</span>  <span class="cmt"># 수식키 단독 입력 무시</span></code></pre>
+  <p>이 필터의 의도는 Ctrl/Alt/Shift <strong>단독</strong> 입력을 무시하는 것이지만, 일부 특수 입력이나 IME에서 오탐 가능성이 있습니다.</p>
+</section>
+
+<!-- ── 9. Debug ── -->
+<section id="debug">
+  <h2><span class="sec-num">09</span>디버깅 방법</h2>
+
+  <h3>XTermParser 디버그 로그</h3>
+<pre><code><span class="cmt"># DEBUG=True로 앱 실행 시 keys.log에 모든 입력 기록</span>
+<span class="cmt"># _xterm_parser.py:61</span>
+self._debug_log_file = <span class="fn">open</span>(<span class="str">"keys.log"</span>, <span class="str">"at"</span>) <span class="kw">if</span> debug <span class="kw">else None</span></code></pre>
+
+  <p><code>keys.log</code> 출력 예시:</p>
+<pre><code>---
+FEED '\x01'
+character='\x01'
+Key(key='ctrl+a', character='\x01')
+---
+FEED '\x1b[97;5u'
+sequence='\x1b[97;5u'
+Key(key='ctrl+a', character=None)</code></pre>
+
+  <h3>직접 키 이벤트 확인 앱</h3>
+<pre><code><span class="kw">from</span> textual.app <span class="kw">import</span> App
+<span class="kw">from</span> textual <span class="kw">import</span> events
+
+<span class="kw">class</span> <span class="cls">KeyDebugApp</span>(App):
+    <span class="kw">def</span> <span class="fn">on_key</span>(self, event: events.Key):
+        <span class="cmt"># 모든 키 입력을 로깅</span>
+        self.log(
+            f<span class="str">"key={event.key!r} "</span>
+            f<span class="str">"character={event.character!r} "</span>
+            f<span class="str">"aliases={event.name_aliases}"</span>
+        )
+
+<span class="kw">if</span> __name__ == <span class="str">"__main__"</span>:
+    KeyDebugApp().run()</code></pre>
+
+  <div class="info-box tip">
+    <div class="label">팁</div>
+    <p>환경 변수 <code>TEXTUAL_LOG=textual.log</code>를 설정하면 <code>self.log()</code> 출력이 파일로 저장됩니다.</p>
+  </div>
+</section>
+
+<!-- ── 10. Terminalist ── -->
+<section id="terminalist">
+  <h2><span class="sec-num">10</span>Terminalist에서의 함의</h2>
+
+  <h3>이중 키 처리 문제</h3>
+  <p>Terminalist는 <strong>Textual 앱 안에서 PTY 터미널을 호스팅</strong>합니다. 키 입력 경로가 이중 구조입니다:</p>
+
+  <div class="diagram"><span class="hl">사용자 키</span> → <span class="wr">Windows Console</span> → <span class="ac">Textual 앱</span> → <span class="pk">(PTY로 전달)</span>
+
+  Textual이 <span class="cy">\x1b[>1u</span> (Kitty) 활성화 시도
+    │
+    ├─ 호스트 터미널이 <span class="hl">지원</span>하면 → Kitty 시퀀스로 입력 수신
+    └─ 호스트 터미널이 <span class="rd">미지원</span>이면 → 레거시 컨트롤 문자로 폴백
+
+  <span class="wr">Ctrl+B</span>를 prefix key로 쓰려면:
+    → Textual이 <span class="hl">먼저 가로채야</span> 함 (on_key에서 event.stop())
+    → 나머지 키는 PTY로 <span class="ac">VT100 시퀀스 변환</span>해서 전달
+    → 이미 <span class="cy">tui/vt100.py</span>에서 Key → VT100 변환 구현</div>
+
+  <h3>권장 사항</h3>
+  <div class="info-box tip">
+    <div class="label">체크리스트</div>
+    <ol style="margin-top: 8px;">
+      <li><strong>Kitty 프로토콜 지원 여부 감지</strong> &mdash; <code>\x1b[?u</code> 쿼리 후 응답 확인</li>
+      <li><strong>레거시 폴백 경로 항상 유지</strong> &mdash; <code>\x01</code>~<code>\x1a</code> 컨트롤 문자 기반</li>
+      <li><strong>Prefix 키 처리는 Textual 이벤트 레벨에서</strong> &mdash; <code>on_key()</code>에서 가로채기</li>
+      <li><strong>PTY 전달 시 VT100 매핑</strong> &mdash; Textual Key → VT100 바이트 변환</li>
+      <li><strong>VSCode에서 테스트 필수</strong> &mdash; Kitty 미지원이므로 레거시 경로만 동작</li>
+    </ol>
+  </div>
+</section>
+
+</div>
+
+<footer>
+  <p>Textual 입력 파이프라인 분석 &mdash; Terminalist 프로젝트 참조 문서</p>
+  <p>Based on <a href="https://github.com/Textualize/textual">Textualize/textual</a> source code analysis</p>
+</footer>
+
+</body>
+</html>

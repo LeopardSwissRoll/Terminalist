@@ -1,0 +1,12 @@
+[project]
+name = "terminalist"
+version = "0.2.0"
+description = "LLM CLI terminal multiplexer — direct VT frontend"
+requires-python = ">=3.11"
+dependencies = [
+    "pywinpty>=2.0",
+    "pyte>=0.8",
+]
+
+[project.scripts]
+terminalist = "terminalist.app:main"
