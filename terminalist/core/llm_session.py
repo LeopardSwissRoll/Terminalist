@@ -60,15 +60,19 @@ class LLMSession(TerminalSession, ABC):
 
     # ── State transition ──
 
+    # Only check bottom N lines for prompt detection (not full screen).
+    # Scrollback is stored in pyte HistoryScreen — no data loss.
+    _DETECT_TAIL = 5
+
     def _check_state_transition(self) -> None:
-        """Detect state transitions based on pyte screen content."""
+        """Detect state transitions based on bottom of pyte screen."""
         if self.state == SessionState.MANUAL:
             return
 
-        lines = self.get_display()
+        tail = self.get_display_tail(self._DETECT_TAIL)
 
         # Detect interactive prompts → publish to TES
-        interaction = self.detect_interaction(lines)
+        interaction = self.detect_interaction(tail)
         if interaction and self._event_stream:
             self._event_stream.publish(
                 Channel.STATE,
@@ -78,19 +82,21 @@ class LLMSession(TerminalSession, ABC):
                 interaction,
             )
 
-        # STARTING: use detect_ready (full check, e.g. Codex needs banner+prompt)
-        # BUSY: use detect_command_ready (lighter check, e.g. Codex only needs prompt)
+        # STARTING: detect_ready (full check, e.g. Codex needs banner — uses full screen)
+        # BUSY: detect_command_ready (lighter check — tail is enough)
         is_ready = False
         if self.state == SessionState.STARTING:
-            is_ready = self.detect_ready(lines)
+            # Codex needs banner check → full screen for initial ready
+            is_ready = self.detect_ready(self.get_display())
         elif self.state == SessionState.BUSY:
-            is_ready = self.detect_command_ready(lines)
+            is_ready = self.detect_command_ready(tail)
 
         if is_ready:
             if self.state in (SessionState.STARTING, SessionState.BUSY):
                 # On BUSY→READY: extract response and publish output
                 if self.state == SessionState.BUSY:
-                    response = self.extract_response(lines)
+                    full_lines = self.get_display()
+                    response = self.extract_response(full_lines)
                     if response and self._event_stream:
                         self._event_stream.publish(
                             Channel.DATA,
@@ -101,7 +107,7 @@ class LLMSession(TerminalSession, ABC):
                             cause_id=self._last_cause_id,
                         )
                     # Capture resume_id
-                    rid = self.capture_resume_id(lines)
+                    rid = self.capture_resume_id(full_lines)
                     if rid:
                         self.resume_id = rid
 

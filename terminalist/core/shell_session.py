@@ -78,12 +78,14 @@ class ShellSession(TerminalSession):
                 )
             self.current_dir = normalized
 
+    _DETECT_TAIL = 5
+
     def _check_state_transition(self) -> None:
         if self.state == SessionState.MANUAL:
             return
-        lines = self.get_display()
+        tail = self.get_display_tail(self._DETECT_TAIL)
         # Check last non-empty line for prompt pattern
-        for line in reversed(lines):
+        for line in reversed(tail):
             stripped = line.rstrip()
             if stripped:
                 log(

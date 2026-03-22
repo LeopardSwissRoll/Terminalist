@@ -1,18 +1,27 @@
-"""EventStreamManager — Typed Event Stream with 3 channels."""
+"""EventStreamManager — Typed Event Stream with 3 channels.
+
+GC strategy: cursor-based pruning (tmux per-client tracking pattern).
+- Track each consumer's cursor position
+- Periodically prune events below the minimum cursor
+- File logging preserves full history for cross-session data replay
+"""
 
 from __future__ import annotations
 
+import json
 import threading
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
+from terminalist.debug import log
 from .event import Channel, Event
 
 
 class EventStreamManager:
     """Typed Event Stream. Manages Data/Control/State channels."""
 
-    def __init__(self) -> None:
+    def __init__(self, event_log_path: Path | None = None) -> None:
         self._events: list[Event] = []
         self._next_id: int = 1
         self._lock = threading.Lock()
@@ -25,6 +34,21 @@ class EventStreamManager:
 
         # Data: notify target session when new data arrives
         self._data_subscribers: dict[str, Callable[[Event], None]] = {}
+
+        # GC: track each consumer's cursor for pruning
+        self._consumer_cursors: dict[str, int] = {}
+
+        # File logging for history preservation
+        self._log_file = None
+        if event_log_path:
+            self._log_file = open(event_log_path, "a", encoding="utf-8")
+            log("tes", f"Event log: {event_log_path}")
+
+    def close(self) -> None:
+        """Close file logger."""
+        if self._log_file:
+            self._log_file.close()
+            self._log_file = None
 
     # ── Core publish ──
 
@@ -49,7 +73,12 @@ class EventStreamManager:
                 cause_id=cause_id,
             )
             self._next_id += 1
-            self._events.append(event)
+            # Only keep Data events in memory (Control/State are dispatched immediately)
+            if channel == Channel.DATA:
+                self._events.append(event)
+
+        # Log all events to file for history
+        self._log_event(event)
 
         if channel == Channel.CONTROL:
             self._dispatch_control(event)
@@ -103,8 +132,67 @@ class EventStreamManager:
                     and event.channel == Channel.DATA
                     and event.target == target_key
                 ):
+                    # Update consumer cursor for GC
+                    self._consumer_cursors[session_id] = event.id
                     return event
         return None
+
+    # ── GC: cursor-based pruning ──
+
+    def gc(self) -> int:
+        """Prune events consumed by ALL subscribers.
+
+        Returns number of events pruned.
+        Uses the minimum cursor across all consumers — events below
+        that point have been consumed by everyone and are safe to remove.
+        (Ref: tmux per-client consumption tracking)
+        """
+        if not self._consumer_cursors:
+            return 0
+        min_cursor = min(self._consumer_cursors.values())
+        with self._lock:
+            before = len(self._events)
+            self._events = [e for e in self._events if e.id >= min_cursor]
+            pruned = before - len(self._events)
+        if pruned > 0:
+            log("tes", f"GC pruned {pruned} events (min_cursor={min_cursor}, remaining={len(self._events)})")
+        return pruned
+
+    def register_consumer(self, session_id: str, cursor: int = 0) -> None:
+        """Register a consumer for GC tracking."""
+        self._consumer_cursors[session_id] = cursor
+
+    def unregister_consumer(self, session_id: str) -> None:
+        """Remove a consumer from GC tracking."""
+        self._consumer_cursors.pop(session_id, None)
+
+    @property
+    def event_count(self) -> int:
+        """Number of events currently in memory."""
+        with self._lock:
+            return len(self._events)
+
+    # ── File logging ──
+
+    def _log_event(self, event: Event) -> None:
+        """Append event to file log (JSONL format)."""
+        if not self._log_file:
+            return
+        try:
+            record = {
+                "id": event.id,
+                "ch": event.channel.value,
+                "kind": event.kind,
+                "src": event.source,
+                "tgt": event.target,
+                "data": event.data,
+                "cause": event.cause_id,
+                "ts": event.timestamp,
+            }
+            self._log_file.write(json.dumps(record, ensure_ascii=False) + "\n")
+            self._log_file.flush()
+        except Exception as e:
+            log("tes", f"Event log write error: {e}")
 
     # ── Subscription ──
 

@@ -47,13 +47,14 @@ class SessionManager:
         else:
             raise ValueError(f"Unknown provider: {provider}")
 
-        # Bind to TES
+        # Bind to TES + register GC consumer
         session.bind_event_stream(self._es)
         target_key = f"session:{session_id}"
         self._es.on_control(target_key, session._handle_control)
         self._es.on_data(
             target_key, lambda _e, s=session: s.notify_data_available()
         )
+        self._es.register_consumer(session_id)
 
         # Spawn
         session.spawn()
@@ -64,13 +65,16 @@ class SessionManager:
         return session
 
     def destroy(self, session_id: str) -> None:
-        """Kill session and clean up TES handlers."""
+        """Kill session and clean up TES handlers + GC consumer."""
         session = self._sessions.pop(session_id, None)
         if session:
             target_key = f"session:{session_id}"
             self._es.remove_control(target_key)
             self._es.remove_data(target_key)
+            self._es.unregister_consumer(session_id)
             session.kill()
+            # GC after removing a consumer
+            self._es.gc()
 
     def get(self, session_id: str) -> TerminalSession | None:
         return self._sessions.get(session_id)

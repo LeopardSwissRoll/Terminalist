@@ -1,4 +1,8 @@
-"""TerminalSession — Base class for all PTY + pyte sessions."""
+"""TerminalSession — pyte screen + state machine + TES connection.
+
+PTY lifecycle is delegated to PtyBackend (composition).
+View/layout concerns belong to Pane (separate class).
+"""
 
 from __future__ import annotations
 
@@ -12,9 +16,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pyte
-from winpty import PtyProcess
 
 from terminalist.debug import is_enabled, log, log_screen_snapshot
+from .pty_backend import PtyBackend
+from .winpty_backend import WinPtyBackend
 
 if TYPE_CHECKING:
     from terminalist.events.event import Event
@@ -30,7 +35,10 @@ class SessionState(Enum):
 
 
 class TerminalSession:
-    """PTY + pyte terminal session using PtyProcess (proven in fakeTerm)."""
+    """Terminal session: pyte virtual screen + state machine.
+
+    PTY I/O is handled by a PtyBackend instance (default: WinPtyBackend).
+    """
 
     def __init__(
         self,
@@ -40,6 +48,7 @@ class TerminalSession:
         env: dict[str, str] | None = None,
         cols: int = 120,
         rows: int = 40,
+        backend: PtyBackend | None = None,
     ) -> None:
         self.session_id = session_id
         self.cmd = cmd
@@ -48,8 +57,8 @@ class TerminalSession:
         self.state = SessionState.DEAD
         self._pre_manual_state: SessionState | None = None
 
-        # PTY (PtyProcess — same API as fakeTerm.py)
-        self._proc: PtyProcess | None = None
+        # PTY backend (composable, swappable)
+        self._backend: PtyBackend = backend or WinPtyBackend()
 
         # pyte virtual terminal
         self._screen = pyte.HistoryScreen(cols, rows, history=5000)
@@ -70,10 +79,10 @@ class TerminalSession:
 
         log("session", f"[{session_id}] created cmd={cmd} cols={cols} rows={rows}")
 
-    # ── PTY lifecycle ──
+    # ── PTY lifecycle (delegated to backend) ──
 
     def spawn(self) -> None:
-        """Start PTY process and reader thread using PtyProcess."""
+        """Start PTY process and reader thread."""
         cmdline = subprocess.list2cmdline(self.cmd)
         rows, cols = self._screen.lines, self._screen.columns
         cwd = str(self.workspace)
@@ -85,14 +94,8 @@ class TerminalSession:
                 f"{ {k: self.env[k] for k in sorted(self.env)}!r}",
             )
 
-        # PtyProcess.spawn takes a single command string, like fakeTerm
         env_merged = self._merged_env() if self.env else None
-        self._proc = PtyProcess.spawn(
-            cmdline,
-            cwd=cwd,
-            dimensions=(rows, cols),
-            env=env_merged,
-        )
+        self._backend.spawn(cmdline, cwd, rows, cols, env_merged)
 
         self._alive = True
         self._reader_thread = threading.Thread(
@@ -100,25 +103,24 @@ class TerminalSession:
         )
         self._reader_thread.start()
         self.state = SessionState.STARTING
-        log("pty", f"[{self.session_id}] spawned pid={self._proc.pid}, reader thread started")
+        log("pty", f"[{self.session_id}] spawned pid={self._backend.pid}, reader thread started")
 
     def kill(self) -> None:
         """Graceful shutdown. Subclasses override _exit_command() for provider-specific exit."""
         log("pty", f"[{self.session_id}] killing")
         self._alive = False
-        proc = self._proc
-        if proc and proc.isalive():
+        if self._backend.is_alive():
             exit_cmd = self._exit_command()
             if exit_cmd:
                 try:
-                    proc.write(exit_cmd + "\r")
+                    self._backend.write(exit_cmd + "\r")
                     log("pty", f"[{self.session_id}] sent {exit_cmd!r}, waiting 1s")
                 except Exception:
                     pass
                 time.sleep(1.0)
-            if proc.isalive():
+            if self._backend.is_alive():
                 try:
-                    proc.terminate()
+                    self._backend.terminate()
                     log("pty", f"[{self.session_id}] force terminated")
                 except Exception as e:
                     log("pty", f"[{self.session_id}] terminate error: {e}")
@@ -128,21 +130,19 @@ class TerminalSession:
             and self._reader_thread is not threading.current_thread()
         ):
             self._reader_thread.join(timeout=2.0)
-        self._proc = None
         self._set_state(SessionState.DEAD)
 
     def _exit_command(self) -> str | None:
         """Return the graceful exit command for this session type. None = skip, just terminate."""
-        return None  # Base: just terminate immediately
+        return None
 
     def resize(self, cols: int, rows: int) -> None:
         """Resize terminal."""
         log("pty", f"[{self.session_id}] resize {cols}x{rows}")
-        if self._proc and self._proc.isalive():
-            try:
-                self._proc.setwinsize(rows, cols)
-            except Exception as e:
-                log("pty", f"[{self.session_id}] setwinsize error: {e}")
+        try:
+            self._backend.set_size(rows, cols)
+        except Exception as e:
+            log("pty", f"[{self.session_id}] setwinsize error: {e}")
         with self._lock:
             self._screen.resize(rows, cols)
 
@@ -160,13 +160,13 @@ class TerminalSession:
                 event.data.get("cols", 120), event.data.get("rows", 40)
             )
 
-    # ── PTY I/O ──
+    # ── PTY I/O (via backend) ──
 
     def write_raw(self, data: str) -> None:
         """Write raw data to PTY."""
-        if self._proc and self._proc.isalive():
+        if self._backend.is_alive():
             log("pty", f"[{self.session_id}] write_raw: {data!r:.50}")
-            self._proc.write(data)
+            self._backend.write(data)
 
     def send_input(self, text: str) -> None:
         """Programmatic input (fire-and-forget)."""
@@ -175,8 +175,8 @@ class TerminalSession:
             return
         log("session", f"[{self.session_id}] send_input: {text!r:.80}")
         self._set_state(SessionState.BUSY)
-        if self._proc and self._proc.isalive():
-            self._proc.write(text + "\r\n")
+        if self._backend.is_alive():
+            self._backend.write(text + "\r\n")
 
     def get_display(self) -> list[str]:
         """Return current screen content."""
@@ -193,20 +193,35 @@ class TerminalSession:
                 result.append(line)
             return result
 
+    def get_display_tail(self, n: int = 5) -> list[str]:
+        """Return last n lines of screen content (for prompt detection)."""
+        with self._lock:
+            start = max(0, self._screen.lines - n)
+            result: list[str] = []
+            for y in range(start, self._screen.lines):
+                try:
+                    line = "".join(
+                        self._screen.buffer[y][x].data or " "
+                        for x in range(self._screen.columns)
+                    )
+                except (IndexError, KeyError):
+                    line = " " * self._screen.columns
+                result.append(line)
+            return result
+
     # ── Reader loop ──
 
     def _reader_loop(self) -> None:
-        """Read PTY output → feed pyte → track dirty rows.
-        Uses PtyProcess.read(4096) like fakeTerm.py."""
+        """Read PTY output → feed pyte → track dirty rows."""
         log("pty", f"[{self.session_id}] reader_loop started")
         read_count = 0
         try:
             while self._alive:
-                if not self._proc or not self._proc.isalive():
+                if not self._backend.is_alive():
                     log("pty", f"[{self.session_id}] process not alive, exiting reader")
                     break
                 try:
-                    data = self._proc.read(4096)
+                    data = self._backend.read(4096)
                 except EOFError:
                     log("pty", f"[{self.session_id}] EOF from process")
                     break
@@ -243,7 +258,6 @@ class TerminalSession:
         finally:
             log("pty", f"[{self.session_id}] reader_loop exited after {read_count} reads")
             self._alive = False
-            self._proc = None
             if self.state != SessionState.DEAD:
                 self._set_state(SessionState.DEAD)
 

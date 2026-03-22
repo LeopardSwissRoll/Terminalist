@@ -59,6 +59,13 @@ tmux의 키바인딩/UX를 기본으로 하되, Terminalist의 기능은 superse
 9. **pyte_patch.py**: 앱 시작 시 pyte 색 이름을 Rich 호환으로 수정
 10. **keymap.py가 키바인딩의 단일 진실 공급원** — 새 바인딩은 여기에만 추가
 11. **tmux 키 모델**: Ctrl+B prefix만 가로채고, 나머지 모든 키는 PTY로 직접 전달
+12. **클래스 분해**: PtyBackend(PTY) / TerminalSession(상태머신+pyte) / Pane(뷰) 3단 분리
+    - PtyBackend ABC: spawn/kill/read/write/resize (PTY 라이브러리 교체 대비)
+    - TerminalSession: pyte Screen + 상태머신 + TES 연결
+    - Pane: 위치(Rect) + 포커스 + copy mode (렌더링 관심사)
+13. **프롬프트 감지는 마지막 N줄만 검사** — dirty 행이 하단에 포함될 때만 실행
+14. **TES 이벤트 GC**: 모든 구독자 최소 커서 기준 정리, 과거 이벤트는 파일 로그로 보존
+15. **의존 방향**: frontend → core → events (역방향 import 금지, Remote 분리 대비)
 
 ## 기술 스택
 
@@ -77,15 +84,18 @@ terminalist/
 ├── keymap.py           키바인딩 정의 (단일 진실 공급원)
 ├── vt100.py            key name → VT100 escape 매핑
 ├── core/
-│   ├── terminal_session.py  TerminalSession (base: PtyProcess + pyte)
+│   ├── pty_backend.py       PtyBackend ABC (PTY 추상화)
+│   ├── winpty_backend.py    WinPtyBackend (pywinpty 구현)
+│   ├── terminal_session.py  TerminalSession (pyte + 상태머신)
 │   ├── llm_session.py       LLMSession ABC
 │   ├── claude_session.py
 │   ├── codex_session.py
 │   ├── shell_session.py
+│   ├── pane.py              Pane + Rect (뷰 래퍼)
 │   └── session_manager.py   SessionManager
 └── events/
     ├── event.py              Event, Channel
-    └── tes.py                EventStreamManager (TES)
+    └── tes.py                EventStreamManager (TES + GC + file log)
 ```
 
 ## 코딩 규칙
@@ -107,6 +117,7 @@ terminalist/
 ## 핵심 참고 자료 (reference/ 디렉토리)
 
 - `architecture-design.md` — Split 트리 + Layer + Compositor 설계 (~300줄)
+- `architecture-references.md` — pymux/ptterm/tmux/prompt-toolkit 리서치 결과 (클래스 분해, 렌더링 최적화, 이벤트 큐, 입력 파싱 패턴)
 - `fakeTerm.py` / `fakeTerm.md` — Windows PTY 패턴 (PtyProcess, DA drain, 키 매핑)
 - `ctrl-key-investigation.html` — Ctrl+키 입력 문제 조사 보고서 (삽질 방지용)
 - `textual-exit-plan.md` — 이전 TUI 프레임워크에서 직접 제어로 전환한 설계 문서
