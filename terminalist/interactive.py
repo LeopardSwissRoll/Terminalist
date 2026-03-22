@@ -220,20 +220,17 @@ def main() -> None:
 
     log("app", f"Session spawned pid={session._backend.pid}")
 
-    # ── Ctrl+C: single → forward, double (< 1s) → exit ──
+    # ── Ctrl+C: always forward to PTY. Exit via Ctrl+B → Ctrl+C only. ──
     stop = threading.Event()
-    last_sigint = [0.0]
     prev_handler = signal.getsignal(signal.SIGINT)
 
     def on_sigint(_s, _f):
-        now = time.monotonic()
-        if now - last_sigint[0] < 1.0:
-            log("app", "Double Ctrl+C → exiting")
-            stop.set()
-            return
-        last_sigint[0] = now
-        log("key", "Ctrl+C → forwarding \\x03 to PTY")
-        session.write_raw("\x03")
+        # SIGINT from OS — forward to PTY, never exit from here
+        log("key", "SIGINT → forwarding \\x03 to PTY")
+        try:
+            session.write_raw("\x03")
+        except Exception:
+            pass
 
     signal.signal(signal.SIGINT, on_sigint)
 
@@ -272,7 +269,9 @@ def main() -> None:
 
     # ── Input loop: ReadConsoleInputW → PTY ──
     log("input", "Entering input loop (ReadConsoleInputW)")
+    log("input", "Exit: Ctrl+B → Ctrl+C (tmux style)")
     input_count = 0
+    _da_buf: str | None = None  # DA response accumulation buffer
     try:
         while not stop.is_set() and session._backend.is_alive():
             check_resize()
@@ -292,19 +291,64 @@ def main() -> None:
                 log("key", f"#{input_count} VK_PROCESSKEY ch={ch!r} repeat={repeat} (skip)")
                 continue
 
-            # ── IME confirmed Korean (vk=0x0000) → forward ──
+            # ── IME confirmed (vk=0x0000) ──
+            # DA responses also arrive as vk=0x0000 one char at a time.
+            # Filter: if char is part of an ESC sequence, accumulate and discard.
             if ch and vk == 0x0000:
+                if ch == "\x1b" or _da_buf is not None:
+                    # Start or continue DA response accumulation
+                    if ch == "\x1b":
+                        _da_buf = ch
+                    else:
+                        _da_buf += ch
+                    # Check if complete: ends with letter in CSI final range
+                    if len(_da_buf) >= 3 and _da_buf[1] == "[" and "\x40" <= _da_buf[-1] <= "\x7e":
+                        log("input", f"#{input_count} DA response filtered: {_da_buf!r}")
+                        _da_buf = None
+                    elif len(_da_buf) > 50:
+                        # Safety: discard overlong sequences
+                        log("input", f"#{input_count} DA buffer overflow, discarding: {_da_buf!r:.50}")
+                        _da_buf = None
+                    continue
+                # Real IME confirmed character (Korean, etc.)
                 session.write_raw(ch)
                 log("key", f"#{input_count} IME confirmed: {ch!r} (U+{ord(ch):04X}) repeat={repeat}")
                 continue
 
-            # ── Ctrl+C ──
+            # ── Ctrl+C → always forward to PTY (no double-exit) ──
+            # Exit is now Ctrl+B → Ctrl+C (tmux style), handled below.
             if ch == "\x03":
-                now = time.monotonic()
-                if now - last_sigint[0] < 1.0:
-                    log("app", "Double Ctrl+C in input loop → exiting")
+                session.write_raw("\x03")
+                log("key", f"#{input_count} Ctrl+C → PTY")
+                continue
+
+            # ── Ctrl+B (prefix key) → tmux-style exit sequence ──
+            if ch == "\x02":
+                log("key", f"#{input_count} PREFIX (Ctrl+B) — waiting for next key...")
+                # Wait up to 2s for next key
+                prefix_deadline = time.monotonic() + 2.0
+                while time.monotonic() < prefix_deadline:
+                    avail2 = wt.DWORD()
+                    kernel32.GetNumberOfConsoleInputEvents(h_in, ctypes.byref(avail2))
+                    if avail2.value > 0:
+                        break
+                    time.sleep(0.01)
+                else:
+                    # Timeout — send literal Ctrl+B
+                    session.write_raw("\x02")
+                    log("key", f"#{input_count} PREFIX timeout → send literal Ctrl+B")
+                    continue
+                ch2, vk2, ctrl2, repeat2 = _read_console_input(h_in)
+                if ch2 == "\x03":
+                    log("app", "PREFIX → Ctrl+C → exiting")
                     break
-                last_sigint[0] = now
+                elif ch2 == "\x02":
+                    # Ctrl+B twice → send literal Ctrl+B to PTY
+                    session.write_raw("\x02")
+                    log("key", f"#{input_count} PREFIX → Ctrl+B → send literal")
+                else:
+                    log("key", f"#{input_count} PREFIX → {ch2!r} vk=0x{vk2:04X} (unbound, dropped)")
+                continue
                 session.write_raw("\x03")
                 log("key", f"#{input_count} Ctrl+C → PTY")
                 continue
