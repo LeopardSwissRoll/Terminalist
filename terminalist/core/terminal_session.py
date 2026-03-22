@@ -98,7 +98,8 @@ class TerminalSession:
                 f"{ {k: self.env[k] for k in sorted(self.env)}!r}",
             )
 
-        env_merged = self._merged_env() if self.env else None
+        # Always pass full env so child inherits VSCODE_*, CLAUDE_* etc.
+        env_merged = self._merged_env()
         self._backend.spawn(cmdline, cwd, rows, cols, env_merged)
 
         self._alive = True
