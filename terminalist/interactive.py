@@ -302,15 +302,19 @@ def main() -> None:
             # ── Paste detection (prompt-toolkit heuristic) ──
             # If batch has text chars AND newlines → paste.
             # Merge into single write for speed + correct behavior.
+            # Modifier-only keys (Shift/Ctrl/Alt) are ignored — they appear
+            # in paste batches but don't carry text.
+            _MODIFIER_VKS = {0x10, 0x11, 0x12, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5}
             text_chars = []
             has_newline = False
             has_text = False
-            is_pure_text = True  # all events are printable/newline (no special keys)
+            is_pure_text = True
             for ch, vk, ctrl, repeat in events:
                 if vk == VK_PROCESSKEY:
                     continue
+                if ch is None and vk in _MODIFIER_VKS:
+                    continue  # Shift/Ctrl/Alt alone — skip, don't break pure_text
                 if ch and vk == 0x0000 and ch != "\x1b":
-                    # IME confirmed — treat as text
                     text_chars.append(ch)
                     has_text = True
                 elif ch and ch in ("\r", "\n"):
@@ -405,8 +409,11 @@ def main() -> None:
                         user32 = ctypes.windll.user32
                         shift_held = bool(user32.GetAsyncKeyState(VK_SHIFT) & 0x8000)
                         if shift_held:
-                            session.write_raw("\x1b[13;2u")
-                            log("key", f"#{input_count} Shift+Enter → CSI u (\\x1b[13;2u)")
+                            # Shift+Enter → \n (newline without execute)
+                            # Works in both Claude CLI and Codex CLI.
+                            # (CSI u \x1b[13;2u was Codex-incompatible — showed as literal text)
+                            session.write_raw("\n")
+                            log("key", f"#{input_count} Shift+Enter → \\n")
                         else:
                             session.write_raw("\r")
                             log("key", f"#{input_count} Enter")
