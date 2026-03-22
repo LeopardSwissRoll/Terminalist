@@ -77,6 +77,10 @@ class TerminalSession:
         self._dirty_rows: set[int] = set()
         self._on_dirty_listeners: list[Callable[[], None]] = []
 
+        # Raw output tap — called with raw PTY data BEFORE pyte feed.
+        # Used by interactive mode (stdout passthrough) and future Remote.
+        self._on_raw_output: list[Callable[[str], None]] = []
+
         log("session", f"[{session_id}] created cmd={cmd} cols={cols} rows={rows}")
 
     # ── PTY lifecycle (delegated to backend) ──
@@ -242,6 +246,12 @@ class TerminalSession:
                     break
                 read_count += 1
                 log("pyte", f"[{self.session_id}] feed #{read_count} len={len(data)} data={data!r:.100}")
+                # Raw output tap (before pyte feed)
+                for cb in self._on_raw_output:
+                    try:
+                        cb(data)
+                    except Exception as e:
+                        log("pty", f"[{self.session_id}] raw_output callback error: {e}")
                 with self._lock:
                     self._stream.feed(data)
                     self._dirty_rows.update(self._screen.dirty)
