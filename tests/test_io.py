@@ -196,7 +196,7 @@ def test_cjk_korean():
 def test_tab_completion():
     """Send Tab and verify it doesn't crash (completion may or may not work)."""
     # Just verify the pipeline survives a Tab keystroke
-    from terminalist.vt100 import VT100_MAP
+    from terminalist.input.keymap_vk import VT100_MAP
     session.write_raw("dir" + VT100_MAP["tab"])
     time.sleep(1.0)
     display = session.get_display()
@@ -224,7 +224,7 @@ def test_ctrl_c():
 
 def test_arrow_keys():
     """Send arrow keys and verify PTY survives."""
-    from terminalist.vt100 import VT100_MAP
+    from terminalist.input.keymap_vk import VT100_MAP
     # Type something, then use arrows
     session.write_raw("echo arrow_test")
     time.sleep(0.3)

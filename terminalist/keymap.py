@@ -1,14 +1,12 @@
-"""Keymap — Single source of truth for all Terminalist keybindings.
+"""Keymap — Single source of truth for Terminalist action bindings.
 
-All keybindings are defined HERE. App, TerminalPane, and Footer
-read from these definitions. To add a new binding, add it to the
-appropriate section below — everything else follows automatically.
+Defines WHAT actions exist and WHICH keys trigger them.
+For raw key translation (VK → ANSI), see input/keymap_vk.py.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
 
 
 @dataclass(frozen=True)
@@ -83,34 +81,10 @@ def prefix_hints_string() -> str:
 
 
 def defined_keys() -> tuple[str, ...]:
-    """Return every Textual key name declared by Terminalist."""
+    """Return every key name declared by Terminalist."""
     return (
         *(k.key for k in GLOBAL_KEYS),
         PREFIX_KEY,
         *(k.key for k in PREFIX_KEYS),
         DETACH_KEY,
     )
-
-
-def control_character_bindings(
-    extra_keys: Iterable[str] = (),
-) -> dict[str, str]:
-    """Return simple ctrl+letter bindings as ASCII control characters.
-
-    This keeps low-level input backends aligned with the higher-level keymap.
-    Only plain ctrl+<letter> forms are included here.
-    """
-    bindings: dict[str, str] = {}
-    for key in (*defined_keys(), *extra_keys):
-        if not key.startswith("ctrl+") or len(key) != 6:
-            continue
-        letter = key[-1]
-        if "a" <= letter <= "z":
-            bindings[key] = chr(ord(letter) - ord("a") + 1)
-    return bindings
-
-
-def global_keys_for_override() -> list[str]:
-    """Keys that must be overridden at App level (prevent Textual defaults).
-    These keys are declared in keymap.py so App bindings stay in sync."""
-    return ["ctrl+c"]

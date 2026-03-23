@@ -79,10 +79,15 @@ tmux의 키바인딩/UX를 기본으로 하되, Terminalist의 기능은 superse
 ```
 terminalist/
 ├── app.py              메인 루프 (구현 필요)
+├── interactive.py      단일 세션 인터랙티브 셸 (얇은 엔트리포인트)
+├── dualrun.py          VSCode + 외부 PowerShell 동시 실행
 ├── pyte_patch.py       pyte 색 이름 Rich 호환 패치
-├── debug.py            --debug 로깅
-├── keymap.py           키바인딩 정의 (단일 진실 공급원)
-├── vt100.py            key name → VT100 escape 매핑
+├── debug.py            --debug 로깅 (환경 감지 + 분리 로그)
+├── keymap.py           액션 바인딩 정의 (prefix 명령, 단일 진실)
+├── input/
+│   ├── win32.py             Windows Console API (ReadConsoleInputW, 모드 관리)
+│   ├── handler.py           이벤트 처리 (paste, DA 필터, key 변환, prefix FSM)
+│   └── keymap_vk.py         VK → ANSI 매핑 + VT100 테이블
 ├── core/
 │   ├── pty_backend.py       PtyBackend ABC (PTY 추상화)
 │   ├── winpty_backend.py    WinPtyBackend (pywinpty 구현)
