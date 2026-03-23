@@ -13,7 +13,7 @@ from pyte.screens import Char
 
 from terminalist.core.pane import Pane, Rect
 from terminalist.debug import log
-from terminalist.frontend.screen_sync import EMPTY_CHAR, extract_cursor, extract_grid
+from terminalist.frontend.screen_sync import EMPTY_CHAR, extract_cursor, extract_grid, extract_grid_and_cursor
 from terminalist.frontend.split_tree import (
     BorderSegment,
     Direction,
@@ -76,20 +76,25 @@ class Compositor:
         # Initialize frame
         frame = [[EMPTY_CHAR] * self._width for _ in range(self._height)]
 
-        # Copy pane contents
+        # Copy pane contents (clipped to Rect bounds)
+        # pyte screen size may temporarily differ from Rect after resize,
+        # so we clip to min(grid_size, rect_size) to prevent leaking.
         for pane in all_panes(root):
             r = pane.rect
             grid = extract_grid(pane.session._screen, pane.session._lock)
 
-            for gy, row in enumerate(grid):
+            max_rows = min(len(grid), r.h)
+            for gy in range(max_rows):
                 fy = r.y + gy
                 if fy >= self._height:
                     break
-                for gx, char in enumerate(row):
+                row = grid[gy]
+                max_cols = min(len(row), r.w)
+                for gx in range(max_cols):
                     fx = r.x + gx
                     if fx >= self._width:
                         break
-                    frame[fy][fx] = char
+                    frame[fy][fx] = row[gx]
 
         # Draw borders
         border_segs = borders(root, rect)

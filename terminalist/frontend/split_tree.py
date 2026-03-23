@@ -59,6 +59,22 @@ def can_split(rect: Rect, direction: Direction) -> bool:
         return rect.h >= MIN_PANE_H * 2 + 1
 
 
+def _split_sizes(total: int, ratio: float, min_size: int) -> tuple[int, int]:
+    """Calculate first/second sizes for a split, with clamping.
+
+    Shared between layout() and _borders_recursive() to avoid inconsistency.
+    Returns (first_size, second_size). Both >= min_size.
+    """
+    first = max(min_size, int(total * ratio) - 1)
+    second = total - first - 1  # -1 for border
+    if second < min_size:
+        second = min_size
+        first = max(min_size, total - second - 1)
+    if first < min_size:
+        first = min_size
+    return first, second
+
+
 def layout(node: SplitNode, rect: Rect) -> None:
     """Recursively compute Rects for all Leaf panes.
 
@@ -67,7 +83,6 @@ def layout(node: SplitNode, rect: Rect) -> None:
     Clamps all sizes to minimums (never negative/zero).
     """
     if isinstance(node, Leaf):
-        # Clamp to minimums
         clamped = Rect(rect.x, rect.y, max(rect.w, MIN_PANE_W), max(rect.h, MIN_PANE_H))
         node.pane.set_rect(clamped)
         log("layout", f"[{node.pane.pane_id}] rect={clamped}")
@@ -75,29 +90,11 @@ def layout(node: SplitNode, rect: Rect) -> None:
 
     if isinstance(node, Split):
         if node.direction == Direction.VERTICAL:
-            total = rect.w
-            first_w = max(MIN_PANE_W, int(total * node.ratio) - 1)
-            second_w = total - first_w - 1  # -1 for border
-            # Clamp both to minimum
-            if second_w < MIN_PANE_W:
-                second_w = MIN_PANE_W
-                first_w = max(MIN_PANE_W, total - second_w - 1)
-            if first_w < MIN_PANE_W:
-                first_w = MIN_PANE_W
-
+            first_w, second_w = _split_sizes(rect.w, node.ratio, MIN_PANE_W)
             first_rect = Rect(rect.x, rect.y, first_w, rect.h)
             second_rect = Rect(rect.x + first_w + 1, rect.y, second_w, rect.h)
-
-        else:  # HORIZONTAL
-            total = rect.h
-            first_h = max(MIN_PANE_H, int(total * node.ratio) - 1)
-            second_h = total - first_h - 1
-            if second_h < MIN_PANE_H:
-                second_h = MIN_PANE_H
-                first_h = max(MIN_PANE_H, total - second_h - 1)
-            if first_h < MIN_PANE_H:
-                first_h = MIN_PANE_H
-
+        else:
+            first_h, second_h = _split_sizes(rect.h, node.ratio, MIN_PANE_H)
             first_rect = Rect(rect.x, rect.y, rect.w, first_h)
             second_rect = Rect(rect.x, rect.y + first_h + 1, rect.w, second_h)
 
@@ -331,29 +328,17 @@ def _borders_recursive(node: SplitNode, rect: Rect, out: list[BorderSegment]) ->
         return
 
     if isinstance(node, Split):
+        # Use same _split_sizes as layout() to ensure consistent arithmetic
         if node.direction == Direction.VERTICAL:
-            first_w = max(MIN_PANE_W, int(rect.w * node.ratio) - 1)
-            second_w = rect.w - first_w - 1
-            if second_w < MIN_PANE_W:
-                second_w = MIN_PANE_W
-                first_w = rect.w - second_w - 1
-
+            first_w, second_w = _split_sizes(rect.w, node.ratio, MIN_PANE_W)
             border_x = rect.x + first_w
             out.append(BorderSegment(border_x, rect.y, rect.h, Direction.VERTICAL))
-
             first_rect = Rect(rect.x, rect.y, first_w, rect.h)
             second_rect = Rect(border_x + 1, rect.y, second_w, rect.h)
-
-        else:  # HORIZONTAL
-            first_h = max(MIN_PANE_H, int(rect.h * node.ratio) - 1)
-            second_h = rect.h - first_h - 1
-            if second_h < MIN_PANE_H:
-                second_h = MIN_PANE_H
-                first_h = rect.h - second_h - 1
-
+        else:
+            first_h, second_h = _split_sizes(rect.h, node.ratio, MIN_PANE_H)
             border_y = rect.y + first_h
             out.append(BorderSegment(rect.x, border_y, rect.w, Direction.HORIZONTAL))
-
             first_rect = Rect(rect.x, rect.y, rect.w, first_h)
             second_rect = Rect(rect.x, border_y + 1, rect.w, second_h)
 
