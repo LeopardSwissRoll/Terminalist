@@ -51,39 +51,52 @@ class Split(SplitNode):
 # ── Layout ──
 
 
+def can_split(rect: Rect, direction: Direction) -> bool:
+    """Check if rect has enough space for a split (min*2 + border)."""
+    if direction == Direction.VERTICAL:
+        return rect.w >= MIN_PANE_W * 2 + 1
+    else:
+        return rect.h >= MIN_PANE_H * 2 + 1
+
+
 def layout(node: SplitNode, rect: Rect) -> None:
     """Recursively compute Rects for all Leaf panes.
 
     Accounts for 1-cell border between Split siblings.
     Calls pane.set_rect() on each Leaf.
+    Clamps all sizes to minimums (never negative/zero).
     """
     if isinstance(node, Leaf):
-        node.pane.set_rect(rect)
-        log("layout", f"[{node.pane.pane_id}] rect={rect}")
+        # Clamp to minimums
+        clamped = Rect(rect.x, rect.y, max(rect.w, MIN_PANE_W), max(rect.h, MIN_PANE_H))
+        node.pane.set_rect(clamped)
+        log("layout", f"[{node.pane.pane_id}] rect={clamped}")
         return
 
     if isinstance(node, Split):
         if node.direction == Direction.VERTICAL:
-            # Left | border(1) | Right
             total = rect.w
             first_w = max(MIN_PANE_W, int(total * node.ratio) - 1)
-            # Ensure second pane also meets minimum
             second_w = total - first_w - 1  # -1 for border
+            # Clamp both to minimum
             if second_w < MIN_PANE_W:
                 second_w = MIN_PANE_W
-                first_w = total - second_w - 1
+                first_w = max(MIN_PANE_W, total - second_w - 1)
+            if first_w < MIN_PANE_W:
+                first_w = MIN_PANE_W
 
             first_rect = Rect(rect.x, rect.y, first_w, rect.h)
             second_rect = Rect(rect.x + first_w + 1, rect.y, second_w, rect.h)
 
         else:  # HORIZONTAL
-            # Top / border(1) / Bottom
             total = rect.h
             first_h = max(MIN_PANE_H, int(total * node.ratio) - 1)
             second_h = total - first_h - 1
             if second_h < MIN_PANE_H:
                 second_h = MIN_PANE_H
-                first_h = total - second_h - 1
+                first_h = max(MIN_PANE_H, total - second_h - 1)
+            if first_h < MIN_PANE_H:
+                first_h = MIN_PANE_H
 
             first_rect = Rect(rect.x, rect.y, rect.w, first_h)
             second_rect = Rect(rect.x, rect.y + first_h + 1, rect.w, second_h)
@@ -195,11 +208,19 @@ def find_neighbor(
     direction: Direction,
     toward_second: bool,
 ) -> Pane | None:
-    """Find the neighboring Pane in the given direction.
+    """Find the spatially adjacent Pane in the given direction.
 
     toward_second=True: right (vertical) or down (horizontal)
     toward_second=False: left (vertical) or up (horizontal)
+
+    Uses Rect positions (must call layout() first) to find the pane
+    whose edge is closest to the source pane's position.
     """
+    source_leaf = find_leaf(root, pane_id)
+    if not source_leaf:
+        return None
+    source_rect = source_leaf.pane.rect
+
     path = _path_to(root, pane_id)
     if not path:
         return None
@@ -212,17 +233,16 @@ def find_neighbor(
         if node.direction != direction:
             continue
 
-        # Check if the target is in the expected child
-        child_idx = _which_child(node, path[i + 1] if i + 1 < len(path) else None, pane_id)
+        child_idx = _which_child(node, pane_id)
         if child_idx is None:
             continue
 
         if toward_second and child_idx == "first":
             # Target is in first, neighbor is in second
-            return _edge_pane(node.second, not toward_second)
+            return _nearest_pane(node.second, source_rect, direction)
         elif not toward_second and child_idx == "second":
             # Target is in second, neighbor is in first
-            return _edge_pane(node.first, not toward_second)
+            return _nearest_pane(node.first, source_rect, direction)
 
     return None
 
@@ -239,7 +259,7 @@ def _path_to(root: SplitNode, pane_id: str) -> list[SplitNode]:
     return []
 
 
-def _which_child(split: Split, child_node: SplitNode | None, pane_id: str) -> str | None:
+def _which_child(split: Split, pane_id: str) -> str | None:
     """Determine if pane_id is in 'first' or 'second' subtree."""
     if find_leaf(split.first, pane_id):
         return "first"
@@ -248,16 +268,43 @@ def _which_child(split: Split, child_node: SplitNode | None, pane_id: str) -> st
     return None
 
 
-def _edge_pane(node: SplitNode, from_end: bool) -> Pane | None:
-    """Get the edge pane of a subtree (leftmost/topmost or rightmost/bottommost)."""
-    if isinstance(node, Leaf):
-        return node.pane
-    if isinstance(node, Split):
-        if from_end:
-            return _edge_pane(node.second, from_end)
-        else:
-            return _edge_pane(node.first, from_end)
-    return None
+def _rect_overlap(a: Rect, b: Rect, direction: Direction) -> int:
+    """Calculate overlap between two rects on the axis perpendicular to direction.
+
+    For vertical movement (left/right): overlap on Y axis.
+    For horizontal movement (up/down): overlap on X axis.
+    """
+    if direction == Direction.VERTICAL:
+        # Overlap on Y axis
+        start = max(a.y, b.y)
+        end = min(a.y + a.h, b.y + b.h)
+    else:
+        # Overlap on X axis
+        start = max(a.x, b.x)
+        end = min(a.x + a.w, b.x + b.w)
+    return max(0, end - start)
+
+
+def _nearest_pane(node: SplitNode, source_rect: Rect, direction: Direction) -> Pane | None:
+    """Find the pane in subtree that overlaps most with source_rect on the perpendicular axis.
+
+    In a 2x2 grid moving right from bottom-left, this picks
+    bottom-right (overlapping rows) instead of top-right.
+    """
+    candidates = all_panes(node)
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+
+    best = None
+    best_overlap = -1
+    for pane in candidates:
+        overlap = _rect_overlap(source_rect, pane.rect, direction)
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best = pane
+    return best
 
 
 # ── Border collection ──

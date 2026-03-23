@@ -11,8 +11,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from terminalist.core.pane import Pane, Rect
 from terminalist.frontend.split_tree import (
     Direction, Leaf, Split, SplitNode, BorderSegment,
-    layout, all_panes, find_leaf,
+    layout, all_panes, find_leaf, can_split,
     split_pane, remove_pane, find_neighbor, borders,
+    MIN_PANE_W, MIN_PANE_H,
 )
 
 results: list[tuple[str, bool, str]] = []
@@ -125,6 +126,33 @@ def test_layout_minimum_size():
     assert b.rect.w >= 2
 
 
+def test_layout_undersize_vertical():
+    """Terminal too narrow for split — sizes clamped to minimum, never 0 or negative."""
+    a, b = _mock_pane("a"), _mock_pane("b")
+    root = Split(Direction.VERTICAL, 0.5, Leaf(a), Leaf(b))
+    layout(root, Rect(0, 0, 3, 10))  # 3 < min*2+1=5
+    assert a.rect.w >= MIN_PANE_W, f"a.w={a.rect.w} < {MIN_PANE_W}"
+    assert b.rect.w >= MIN_PANE_W, f"b.w={b.rect.w} < {MIN_PANE_W}"
+
+
+def test_layout_undersize_horizontal():
+    """Terminal too short for split — sizes clamped to minimum."""
+    a, b = _mock_pane("a"), _mock_pane("b")
+    root = Split(Direction.HORIZONTAL, 0.5, Leaf(a), Leaf(b))
+    layout(root, Rect(0, 0, 80, 2))  # 2 < min*2+1=3
+    assert a.rect.h >= MIN_PANE_H, f"a.h={a.rect.h} < {MIN_PANE_H}"
+    assert b.rect.h >= MIN_PANE_H, f"b.h={b.rect.h} < {MIN_PANE_H}"
+
+
+def test_can_split_check():
+    """can_split returns False when rect is too small."""
+    assert can_split(Rect(0, 0, 80, 24), Direction.VERTICAL) is True
+    assert can_split(Rect(0, 0, 4, 24), Direction.VERTICAL) is False
+    assert can_split(Rect(0, 0, 5, 24), Direction.VERTICAL) is True
+    assert can_split(Rect(0, 0, 80, 2), Direction.HORIZONTAL) is False
+    assert can_split(Rect(0, 0, 80, 3), Direction.HORIZONTAL) is True
+
+
 # ══════════════════════════════════════════════
 #  Tree traversal
 # ══════════════════════════════════════════════
@@ -210,6 +238,7 @@ def test_remove_from_nested():
 def test_neighbor_right():
     a, b = _mock_pane("a"), _mock_pane("b")
     root = Split(Direction.VERTICAL, 0.5, Leaf(a), Leaf(b))
+    layout(root, Rect(0, 0, 80, 24))
     neighbor = find_neighbor(root, "a", Direction.VERTICAL, toward_second=True)
     assert neighbor is not None and neighbor.pane_id == "b"
 
@@ -217,6 +246,7 @@ def test_neighbor_right():
 def test_neighbor_left():
     a, b = _mock_pane("a"), _mock_pane("b")
     root = Split(Direction.VERTICAL, 0.5, Leaf(a), Leaf(b))
+    layout(root, Rect(0, 0, 80, 24))
     neighbor = find_neighbor(root, "b", Direction.VERTICAL, toward_second=False)
     assert neighbor is not None and neighbor.pane_id == "a"
 
@@ -224,6 +254,7 @@ def test_neighbor_left():
 def test_neighbor_none_at_edge():
     a, b = _mock_pane("a"), _mock_pane("b")
     root = Split(Direction.VERTICAL, 0.5, Leaf(a), Leaf(b))
+    layout(root, Rect(0, 0, 80, 24))
     # a has no left neighbor
     assert find_neighbor(root, "a", Direction.VERTICAL, toward_second=False) is None
 
@@ -231,8 +262,57 @@ def test_neighbor_none_at_edge():
 def test_neighbor_wrong_direction():
     a, b = _mock_pane("a"), _mock_pane("b")
     root = Split(Direction.VERTICAL, 0.5, Leaf(a), Leaf(b))
+    layout(root, Rect(0, 0, 80, 24))
     # Vertical split has no horizontal neighbors
     assert find_neighbor(root, "a", Direction.HORIZONTAL, toward_second=True) is None
+
+
+def test_neighbor_2x2_right_from_bottom_left():
+    """CRITICAL: In a 2x2 grid, right from C should go to D, not B.
+
+    Layout:
+      A | B
+      -----
+      C | D
+    """
+    a, b, c, d = _mock_pane("a"), _mock_pane("b"), _mock_pane("c"), _mock_pane("d")
+    root = Split(
+        Direction.HORIZONTAL, 0.5,
+        Split(Direction.VERTICAL, 0.5, Leaf(a), Leaf(b)),
+        Split(Direction.VERTICAL, 0.5, Leaf(c), Leaf(d)),
+    )
+    layout(root, Rect(0, 0, 80, 24))
+    neighbor = find_neighbor(root, "c", Direction.VERTICAL, toward_second=True)
+    assert neighbor is not None and neighbor.pane_id == "d", \
+        f"Expected 'd', got '{neighbor.pane_id if neighbor else None}'"
+
+
+def test_neighbor_2x2_left_from_top_right():
+    """In 2x2 grid, left from B should go to A, not C."""
+    a, b, c, d = _mock_pane("a"), _mock_pane("b"), _mock_pane("c"), _mock_pane("d")
+    root = Split(
+        Direction.HORIZONTAL, 0.5,
+        Split(Direction.VERTICAL, 0.5, Leaf(a), Leaf(b)),
+        Split(Direction.VERTICAL, 0.5, Leaf(c), Leaf(d)),
+    )
+    layout(root, Rect(0, 0, 80, 24))
+    neighbor = find_neighbor(root, "b", Direction.VERTICAL, toward_second=False)
+    assert neighbor is not None and neighbor.pane_id == "a", \
+        f"Expected 'a', got '{neighbor.pane_id if neighbor else None}'"
+
+
+def test_neighbor_2x2_down_from_top_left():
+    """In 2x2 grid, down from A should go to C, not B."""
+    a, b, c, d = _mock_pane("a"), _mock_pane("b"), _mock_pane("c"), _mock_pane("d")
+    root = Split(
+        Direction.HORIZONTAL, 0.5,
+        Split(Direction.VERTICAL, 0.5, Leaf(a), Leaf(b)),
+        Split(Direction.VERTICAL, 0.5, Leaf(c), Leaf(d)),
+    )
+    layout(root, Rect(0, 0, 80, 24))
+    neighbor = find_neighbor(root, "a", Direction.HORIZONTAL, toward_second=True)
+    assert neighbor is not None and neighbor.pane_id == "c", \
+        f"Expected 'c', got '{neighbor.pane_id if neighbor else None}'"
 
 
 # ══════════════════════════════════════════════
@@ -298,11 +378,18 @@ def main():
     run_test("remove_last_pane", test_remove_last_pane)
     run_test("remove_from_nested", test_remove_from_nested)
 
+    run_test("layout_undersize_vertical", test_layout_undersize_vertical)
+    run_test("layout_undersize_horizontal", test_layout_undersize_horizontal)
+    run_test("can_split_check", test_can_split_check)
+
     print("\n── Neighbor ──")
     run_test("neighbor_right", test_neighbor_right)
     run_test("neighbor_left", test_neighbor_left)
     run_test("neighbor_none_at_edge", test_neighbor_none_at_edge)
     run_test("neighbor_wrong_direction", test_neighbor_wrong_direction)
+    run_test("neighbor_2x2_right_from_bottom_left", test_neighbor_2x2_right_from_bottom_left)
+    run_test("neighbor_2x2_left_from_top_right", test_neighbor_2x2_left_from_top_right)
+    run_test("neighbor_2x2_down_from_top_left", test_neighbor_2x2_down_from_top_left)
 
     print("\n── Borders ──")
     run_test("borders_single_pane", test_borders_single_pane)
