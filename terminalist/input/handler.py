@@ -100,6 +100,12 @@ def run_input_loop(
             if not events:
                 continue
 
+            # Debug: dump all events in batch
+            if len(events) > 1:
+                log("input", f"Batch: {len(events)} events")
+                for i, (c, v, ct, r) in enumerate(events):
+                    log("input", f"  [{i}] ch={c!r} vk=0x{v:04X} ctrl=0x{ct:08X} repeat={r}")
+
             # ── Paste detection ──
             paste_text = _detect_paste(events)
             if paste_text is not None:
