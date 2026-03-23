@@ -151,6 +151,9 @@ def run(command: str, cwd: str | None = None) -> None:
 
     signal.signal(signal.SIGINT, on_sigint)
 
+    # ── Bracketed paste mode tracking ──
+    bracketed_paste = [False]
+
     # ── Reader thread: PTY → stdout ──
     def reader():
         nonlocal last_size
@@ -158,6 +161,10 @@ def run(command: str, cwd: str | None = None) -> None:
             try:
                 data = proc.read(4096)
                 if data:
+                    if "\x1b[?2004h" in data:
+                        bracketed_paste[0] = True
+                    if "\x1b[?2004l" in data:
+                        bracketed_paste[0] = False
                     sys.stdout.write(data)
                     sys.stdout.flush()
                 new = _terminal_size()
@@ -241,7 +248,10 @@ def run(command: str, cwd: str | None = None) -> None:
             if has_newline and has_text and is_pure_text and len(text_chars) > 2:
                 paste_text = "".join(text_chars)
                 paste_text = paste_text.replace("\r\n", "\r").replace("\n", "\r")
-                proc.write(paste_text)
+                if bracketed_paste[0]:
+                    proc.write(f"\x1b[200~{paste_text}\x1b[201~")
+                else:
+                    proc.write(paste_text)
                 continue
 
             # ── Process events one by one ──

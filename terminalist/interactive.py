@@ -215,7 +215,18 @@ def main() -> None:
         rows=rows,
     )
 
+    # ── Bracketed paste mode tracking ──
+    # PTY apps send \x1b[?2004h to enable, \x1b[?2004l to disable.
+    # We track this in raw output to wrap paste text with markers.
+    bracketed_paste = [False]
+
     def on_raw_output(data: str) -> None:
+        if "\x1b[?2004h" in data:
+            bracketed_paste[0] = True
+            log("input", "Bracketed paste mode ON")
+        if "\x1b[?2004l" in data:
+            bracketed_paste[0] = False
+            log("input", "Bracketed paste mode OFF")
         try:
             sys.stdout.write(data)
             sys.stdout.flush()
@@ -331,9 +342,14 @@ def main() -> None:
                 paste_text = "".join(text_chars)
                 # Normalize newlines: \r\n → \r, lone \n → \r
                 paste_text = paste_text.replace("\r\n", "\r").replace("\n", "\r")
-                session.write_raw(paste_text)
+                if bracketed_paste[0]:
+                    # Wrap with bracketed paste markers — shell won't execute newlines
+                    session.write_raw(f"\x1b[200~{paste_text}\x1b[201~")
+                    log("key", f"#{input_count} PASTE bracketed ({len(paste_text)} chars)")
+                else:
+                    session.write_raw(paste_text)
                 input_count += len(events)
-                log("key", f"#{input_count} PASTE detected ({len(paste_text)} chars, {len(events)} events)")
+                log("key", f"#{input_count} PASTE detected ({len(paste_text)} chars, {len(events)} events, bracket={'ON' if bracketed_paste[0] else 'OFF'})")
                 continue
 
             # ── Process events one by one (normal typing) ──
