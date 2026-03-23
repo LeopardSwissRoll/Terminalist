@@ -1,147 +1,197 @@
-# fakeTerm — PTY 가상 터미널 시행착오 기록
+# fakeTerm — PTY 가상 터미널 패스스루
 
-Windows에서 PTY 프로세스를 래핑하여 "진짜 터미널처럼" 보이게 만들 때 겪은 문제들.
+Windows에서 PTY 프로세스를 래핑하여 "진짜 터미널처럼" 보이게 만드는 도구.
+Claude CLI, Codex CLI, PowerShell 등을 PTY 안에서 실행하고 모든 입출력을 중계.
 
----
+## 사용법
 
-## 1. ANSI 이스케이프가 깨져 보임
-
-**증상**: PTY 출력에 `[32m`, `[0m` 같은 텍스트가 그대로 출력됨. 색상/커서 이동 안 됨.
-
-**원인**: Windows 콘솔은 기본적으로 ANSI/VT 이스케이프 시퀀스를 해석 안 함.
-
-**해결**: `SetConsoleMode`로 `ENABLE_VIRTUAL_TERMINAL_PROCESSING` (0x0004) 플래그 활성화.
-```python
-kernel32.SetConsoleMode(h_out, mode.value | 0x0004)
 ```
-이거 없으면 PTY의 모든 TUI 출력이 의미 없는 문자열 쓰레기.
+python fakeTerm.py                          # 기본: powershell
+python fakeTerm.py "claude --verbose"       # Claude CLI
+python fakeTerm.py "codex --no-alt-screen"  # Codex CLI
+python fakeTerm.py "python"                 # 아무 CLI
+python fakeTerm.py "claude" --cwd ~/myproj  # 작업 디렉토리 지정
+```
+
+종료: **Ctrl+B → Ctrl+C** (tmux 방식)
+Ctrl+B 두 번 = 리터럴 Ctrl+B 전달
 
 ---
 
-## 2. 키보드 입력이 한 글자씩 안 읽힘
+## 아키텍처
 
-**증상**: `input()`으로 읽으면 Enter 칠 때까지 한 줄을 모아서 줌. CLI의 TUI (탭 완성, 화살표 네비게이션) 불가.
-
-**원인**: Python `input()`은 canonical mode (줄 버퍼링). PTY passthrough에는 character-at-a-time이 필요.
-
-**해결**: Windows에서는 `msvcrt.getwch()` — 한 글자씩 즉시 반환, 에코 없음.
-Unix라면 `tty.setraw(sys.stdin)` 후 `sys.stdin.read(1)`.
-
----
-
-## 3. 방향키/Home/End가 안 먹힘
-
-**증상**: 방향키 누르면 `[A` 같은 문자가 입력됨.
-
-**원인**: Windows `msvcrt.getwch()`는 특수 키를 **2바이트 시퀀스**로 반환:
-- 첫 호출: `\x00` 또는 `\xe0` (prefix)
-- 둘째 호출: 실제 키 코드 (`H`=Up, `P`=Down, `M`=Right, `K`=Left)
-
-PTY 프로세스는 ANSI 이스케이프 시퀀스 (`\x1b[A` = Up)를 기대함.
-
-**해결**: prefix 감지 → 둘째 바이트 읽기 → ANSI 시퀀스로 변환:
-```python
-if ch in ("\x00", "\xe0"):
-    key = msvcrt.getwch()
-    ansi = {"H": "\x1b[A", "P": "\x1b[B", ...}.get(key, "")
-    if ansi:
-        proc.write(ansi)
+```
+입력: ReadConsoleInputW → 배치 읽기 → paste 감지 / 개별 처리 → PTY write
+출력: PTY read(4096) → sys.stdout.write (raw passthrough)
+화면: alt screen 진입/복원
 ```
 
 ---
 
-## 4. DA 응답 쓰레기가 stdin에 섞임
+## 해결된 문제들
 
-**증상**: 시작 직후 입력하면 이상한 문자열(`[?61;6;7;21;22;23;24;28;32;42c`)이 먼저 입력됨.
+### 1. ANSI 이스케이프가 깨져 보임
 
-**원인**: Claude CLI가 시작 시 Device Attributes 쿼리 (`\x1b[c`)를 보냄. 터미널이 응답으로 DA 문자열을 stdin에 넣음. 이걸 PTY에 다시 전달하면 의미 없는 입력이 됨.
+**원인**: Windows 콘솔 기본값이 VT 시퀀스 비해석.
+**해결**: `SetConsoleMode`로 `ENABLE_VIRTUAL_TERMINAL_PROCESSING` 활성화.
 
-**해결**: 시작 후 2초간 stdin 버퍼를 비움 (drain):
+### 2. 한글 IME 입력
+
+**원인**: `msvcrt.getwch()`는 IME 조합 완료까지 블로킹. 조합 중 커서가 안 움직임.
+**해결**: `ReadConsoleInputW`로 교체.
+- `VK_PROCESSKEY` (0xE5): IME가 키를 가로챈 이벤트 → skip
+- `vk=0x0000`: IME 확정된 한글 → PTY에 전달
+- 영문/특수키는 `vk` 코드로 직접 구분
+
 ```python
-drain_end = time.monotonic() + 2.0
-while time.monotonic() < drain_end:
-    if msvcrt.kbhit():
-        msvcrt.getwch()  # 버림
-    time.sleep(0.02)
-```
-2초는 경험적 값. TUI 렌더링 + DA 왕복에 충분한 시간.
-
----
-
-## 5. Ctrl+C가 프로세스를 즉사시킴
-
-**증상**: Ctrl+C 누르면 Python 프로세스 자체가 죽음. PTY 내부 CLI에 Ctrl+C를 보내고 싶었는데.
-
-**원인**: Python의 기본 SIGINT 핸들러가 `KeyboardInterrupt` 발생. PTY 프로세스가 아니라 래퍼가 죽음.
-
-**해결**: SIGINT 핸들러를 커스텀으로 교체:
-- 1번 누름: PTY에 `\x03` (Ctrl+C) 전달
-- 1초 내 2번 누름: 래퍼 자체 종료
-```python
-def on_sigint(_s, _f):
-    if now - last_sigint[0] < 1.0:
-        stop.set()  # 래퍼 종료
-        return
-    proc.write("\x03")  # PTY에 전달
+if vk == VK_PROCESSKEY:
+    continue  # IME 조합중 — 건너뜀
+if ch and vk == 0x0000:
+    proc.write(ch)  # 확정된 한글
+    continue
 ```
 
----
+### 3. 화살표/특수키
 
-## 6. 터미널 리사이즈가 반영 안 됨
+**원인**: `msvcrt.getwch()`는 `\x00`/`\xe0` prefix + scan code 방식.
+VSCode 터미널에서 VT input mode가 켜지면 ESC 시퀀스로 오는데 타이밍 이슈 발생.
 
-**증상**: 창 크기 바꿔도 PTY 내부 CLI는 원래 크기로 출력. 줄이 잘리거나 줄바꿈 위치가 틀림.
+**해결**: `ReadConsoleInputW`의 VK 코드로 직접 매핑. 타이밍 문제 없음.
 
-**원인**: PTY는 spawn 시점의 크기를 기억. 터미널 크기 변경을 PTY에 알려줘야 함.
-
-**해결**: reader thread에서 주기적으로 `os.get_terminal_size()` 확인, 바뀌었으면 `proc.setwinsize()` 호출:
 ```python
-new_size = _terminal_size()
-if new_size != last_size:
-    last_size = new_size
-    proc.setwinsize(*new_size)
+_SPECIAL_VK = {
+    0x26: "\x1b[A",   # VK_UP
+    0x28: "\x1b[B",   # VK_DOWN
+    0x27: "\x1b[C",   # VK_RIGHT
+    0x25: "\x1b[D",   # VK_LEFT
+    ...
+}
 ```
 
----
+**주의**: `uChar`가 `'\x00'` (NUL)인 경우 Python에서 truthy.
+반드시 `ch if ch and ch != '\x00' else None`으로 처리.
 
-## 7. pyte 사용 시 — screen.display에서 IndexError
+### 4. DA 응답 오염
 
-**증상**: `list(screen.display)` 호출 시 간헐적 `IndexError: string index out of range`.
+**원인**: CLI가 시작 시 DA 쿼리(`\x1b[c`)를 보내면 터미널이 응답.
+이 응답이 `ReadConsoleInputW`에 `vk=0x0000`으로 한 글자씩 도착.
+PTY에 전달하면 쓰레기 입력이 됨.
 
-**원인**: pyte의 `render()` 함수가 빈 char 데이터에 `char[0]` 접근. 한글/wide character 처리 중 버퍼가 깨지면 발생. pyte 라이브러리 버그.
+**해결**: 시간 기반 drain 대신 **인라인 DA 필터** 사용.
+`vk=0x0000` + ESC 시퀀스 패턴을 누적해서 완성되면 버림.
 
-**해결**: 모든 `screen.display` 접근을 try/except로 감싸기:
 ```python
-try:
-    display = list(self.screen.display)
-except (IndexError, KeyError):
-    display = []
+if ch == "\x1b" or da_buf is not None:
+    # ESC 시퀀스 누적
+    da_buf = ch if ch == "\x1b" else da_buf + ch
+    if len(da_buf) >= 3 and da_buf[1] == "[" and "\x40" <= da_buf[-1] <= "\x7e":
+        da_buf = None  # 완성 → 버림
+    continue
 ```
-다음 프레임에서 자연 복구됨. 한 프레임 스킵해도 체감 차이 없음.
 
----
+시간 기반 drain을 쓰지 않는 이유: 첫 키 입력이 씹힘.
 
-## 8. PTY 프로세스 종료 시 정리
+### 5. Backspace — 단어 통째 삭제
 
-**증상**: 래퍼 종료해도 PTY 프로세스가 좀비로 남음.
+**원인**: `\x08` (BS/Ctrl+H)을 보내면 PSReadLine이 "undo group"으로 처리.
+IME로 입력한 한글이 한 그룹이라 전부 삭제됨.
 
-**해결**: 종료 순서:
-1. `/exit` 명령 전송 (CLI의 정상 종료 경로)
-2. 1초 대기
-3. 아직 살아있으면 `proc.terminate()` (강제 종료)
+**해결**: `\x7f` (DEL) 전송. PSReadLine이 단일 문자 삭제로 처리.
 
 ```python
-if proc.isalive():
-    proc.write("/exit\r")
-    time.sleep(1)
-    if proc.isalive():
-        proc.terminate()
+elif ch == "\x08":
+    proc.write("\x7f")  # BS → DEL
+```
+
+### 6. Shift+Enter — 줄바꿈
+
+**원인**: `dwControlKeyState`의 SHIFT 비트가 콘솔 모드 0에서 불안정.
+CSI u 시퀀스(`\x1b[13;2u`)는 Codex CLI에서 리터럴 텍스트로 표시됨.
+
+**해결**: `user32.GetAsyncKeyState(VK_SHIFT)`로 하드웨어 키 상태 직접 확인.
+`\n` (LF) 전송 — Claude CLI, Codex CLI 둘 다 호환.
+
+```python
+if user32.GetAsyncKeyState(VK_SHIFT) & 0x8000:
+    proc.write("\n")   # Shift+Enter → 줄바꿈
+else:
+    proc.write("\r")   # Enter → 실행
+```
+
+**주의**: `GetAsyncKeyState`는 `user32.dll`에 있음. `kernel32`에서 호출하면 `AttributeError`.
+
+### 7. Ctrl+C 충돌
+
+**원인**: "Ctrl+C 2번 = 종료"가 CLI 내부의 Ctrl+C 동작과 충돌.
+Claude CLI의 "Press Ctrl-C again to exit"에서 우리 래퍼가 먼저 종료됨.
+
+**해결**: tmux 방식 prefix key.
+- Ctrl+C → 항상 PTY에 `\x03` 전달
+- Ctrl+B → Ctrl+C = 래퍼 종료
+- Ctrl+B → Ctrl+B = 리터럴 Ctrl+B 전달
+- Ctrl+B → 2초 타임아웃 = 리터럴 Ctrl+B 전달
+
+### 8. 붙여넣기 느림 + 자동 실행
+
+**원인**: 붙여넣기 텍스트가 `ReadConsoleInputW`에 개별 KEY_EVENT로 도착.
+한 글자씩 처리하면 PTY write 100번 → 에코가 보일 정도로 느림.
+뉴라인이 `\r`로 전달되면 각 줄이 실행됨.
+
+**해결**: prompt-toolkit 휴리스틱 방식의 배치 감지.
+1. `GetNumberOfConsoleInputEvents`로 모든 이벤트 한번에 읽기
+2. 배치에 텍스트 + 뉴라인 혼재 → paste 판정
+3. 합쳐서 `\r\n` → `\r` 변환 후 1번 write
+
+```python
+if has_newline and has_text and is_pure_text and len(text_chars) > 2:
+    paste_text = "".join(text_chars)
+    paste_text = paste_text.replace("\r\n", "\r").replace("\n", "\r")
+    proc.write(paste_text)
+```
+
+**주의**: Shift/Ctrl/Alt modifier 키(vk=0x10/0x11/0x12)가 배치에 섞여 들어옴.
+이걸 skip하지 않으면 `is_pure_text`가 깨져서 paste 감지 실패.
+
+### 9. VSCode 터미널에서 입력 멈춤
+
+**원인**: VSCode가 focus/mouse 이벤트를 콘솔에 보냄.
+`_read_console_input()`이 `KEY_DOWN`만 찾는 내부 루프에서
+non-KEY 이벤트에 영원히 블로킹.
+
+**해결**: `_read_one_record()` — 1개 레코드만 읽고 즉시 반환.
+KEY_DOWN이 아니면 `None` 반환. 배치 읽기에서 사용.
+
+```python
+def _read_one_record(h_in):
+    # ReadConsoleInputW 1회 → KEY_DOWN이면 결과, 아니면 None
+    ...
+
+# 배치 읽기
+while avail > 0:
+    result = _read_one_record(h_in)
+    if result is not None:
+        events.append(result)
+```
+
+### 10. Alt Screen
+
+**해결**: 시작 시 대체 화면 버퍼 진입, 종료 시 복원.
+기존 터미널 내용을 덮어쓰지 않음.
+
+```python
+sys.stdout.write("\x1b[?1049h\x1b[H\x1b[2J")  # 진입
+sys.stdout.write("\x1b[?1049l")                  # 복원
 ```
 
 ---
 
 ## 핵심 교훈
 
-1. **Windows PTY는 Unix와 완전히 다르다** — `msvcrt`/`ctypes`/`winpty` 조합이 필수. Unix의 `pty.fork()` + `termios`와는 다른 세계.
-2. **DA 쿼리 drain은 경험적 해결** — 깔끔한 방법이 없음. 시작 후 2초 drain이 실전에서 가장 안정적.
-3. **pyte는 화면 상태 관리에 유용하지만 버그가 있다** — wide character 처리에서 크래시. 방어 코드 필수.
-4. **Ctrl+C 이중 처리는 UX 필수** — 1번은 CLI에 전달, 2번은 래퍼 탈출. 이게 없으면 CLI에서 빠져나올 수 없거나, 반대로 CLI에 Ctrl+C를 보낼 수 없음.
+1. **Windows 입력은 `ReadConsoleInputW`가 정답** — msvcrt는 IME/VT input/paste 어느 것도 제대로 못 함.
+2. **non-KEY 이벤트를 항상 고려** — VSCode가 focus/mouse 이벤트를 보내서 블로킹 유발.
+3. **DA 응답은 인라인 필터로** — 시간 기반 drain은 키 입력을 삼킴.
+4. **Backspace = DEL(0x7F)** — BS(0x08)은 PSReadLine undo group 동작.
+5. **Shift+Enter = \n** — CSI u는 Codex 비호환, \n은 양쪽 다 OK.
+6. **GetAsyncKeyState는 user32.dll** — kernel32 아님.
+7. **배치 읽기 + paste 휴리스틱** — 텍스트+뉴라인 혼재 = paste.
+8. **Ctrl+C는 prefix key로 보호** — CLI 내부 Ctrl+C와 충돌 방지.
