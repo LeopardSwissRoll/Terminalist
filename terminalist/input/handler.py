@@ -130,13 +130,18 @@ def run_input_loop(
 
                 # IME confirmed (vk=0x0000) — DA filter + Korean
                 if ch and vk == 0x0000:
-                    da_buf = _da_filter(ch, da_buf, input_count)
-                    if da_buf is not None or da_buf == "":
-                        # Still accumulating or just cleared — either way, consumed
-                        continue
-                    # da_buf is None means _da_filter returned None = forwarded char
-                    write(ch)
-                    log("key", f"#{input_count} IME confirmed: {ch!r} (U+{ord(ch):04X})")
+                    result = _da_filter(ch, da_buf, input_count)
+                    if result is None:
+                        # Not a DA sequence — forward Korean char to PTY
+                        da_buf = None
+                        write(ch)
+                        log("key", f"#{input_count} IME confirmed: {ch!r} (U+{ord(ch):04X})")
+                    elif result == "":
+                        # DA sequence complete — discard, reset buffer
+                        da_buf = None
+                    else:
+                        # Still accumulating DA sequence
+                        da_buf = result
                     continue
 
                 # Ctrl+C → forward to PTY
