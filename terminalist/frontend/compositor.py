@@ -121,40 +121,49 @@ class Compositor:
         focused_pane: Pane | None = None,
     ) -> None:
         """Full render cycle: compose → diff → VT100 output."""
-        curr_frame = self.compose(root, rect, focused_pane)
-        prev = self._prev_frame
+        try:
+            curr_frame = self.compose(root, rect, focused_pane)
+            prev = self._prev_frame
 
-        self._writer.hide_cursor()
+            self._writer.hide_cursor()
 
-        # Diff and emit
-        cells_written = 0
-        for y in range(self._height):
-            for x in range(self._width):
-                curr = curr_frame[y][x]
-                if prev is not None:
-                    old = prev[y][x]
-                    if curr is old:
-                        continue  # identity check — fast path (90%+)
-                    if curr == old:
-                        continue  # value check — slower but handles copies
+            # Diff and emit
+            cells_written = 0
+            for y in range(self._height):
+                for x in range(self._width):
+                    curr = curr_frame[y][x]
+                    if prev is not None:
+                        try:
+                            old = prev[y][x]
+                        except IndexError:
+                            old = None  # prev_frame size mismatch after resize
+                        if old is not None:
+                            if curr is old:
+                                continue
+                            if curr == old:
+                                continue
 
-                # CJK stub cell — don't emit (terminal handles wide char)
-                if curr.data == "":
-                    continue
+                    # CJK stub cell — don't emit (terminal handles wide char)
+                    if curr.data == "":
+                        continue
 
-                self._writer.move_to(x, y)
-                self._writer.set_attrs(curr)
-                self._writer.write_char(curr.data)
-                cells_written += 1
+                    self._writer.move_to(x, y)
+                    self._writer.set_attrs(curr)
+                    self._writer.write_char(curr.data)
+                    cells_written += 1
 
-        # Position cursor at focused pane
-        if focused_pane:
-            cx, cy = extract_cursor(focused_pane.session._screen)
-            r = focused_pane.rect
-            self._writer.move_to(r.x + cx, r.y + cy)
+            # Position cursor at focused pane
+            if focused_pane:
+                cx, cy = extract_cursor(focused_pane.session._screen)
+                r = focused_pane.rect
+                self._writer.move_to(r.x + cx, r.y + cy)
 
-        self._writer.reset_attrs()
-        self._writer.show_cursor()
+            self._writer.reset_attrs()
+            self._writer.show_cursor()
+        except Exception as e:
+            log("render", f"RENDER ERROR: {type(e).__name__}: {e}")
+            import traceback
+            log("render", traceback.format_exc())
         self._writer.flush()
 
         self._prev_frame = curr_frame

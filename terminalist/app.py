@@ -87,6 +87,14 @@ class App:
         rows, cols = terminal_size()
         log("app", f"=== Terminalist starting (env={env}, {cols}x{rows}) ===")
 
+        # Redirect stderr to debug log so tracebacks are captured
+        # even when alt screen is active (stderr would be invisible)
+        import io
+        stderr_log = open(f"terminalist_stderr_{env}.log", "w", encoding="utf-8")
+        old_stderr = sys.stderr
+        sys.stderr = stderr_log
+        log("app", f"stderr redirected to terminalist_stderr_{env}.log")
+
         enter_alt_screen()
         self._compositor = Compositor(cols, rows, self._writer)
 
@@ -121,6 +129,9 @@ class App:
             signal.signal(signal.SIGINT, prev_handler)
             self._cleanup()
             exit_alt_screen()
+            # Restore stderr
+            sys.stderr = old_stderr
+            stderr_log.close()
             log("app", "=== Terminalist exited ===")
             print("[terminalist] Session ended.")
 
