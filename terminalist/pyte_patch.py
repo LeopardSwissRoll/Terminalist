@@ -1,18 +1,14 @@
-"""Patch pyte.graphics color names to be Rich-compatible.
+"""Pyte patches — color fixes + PreservingScreen.
 
-pyte uses non-standard color names that Rich's Color.parse() doesn't understand:
-  - "brown" → Rich expects "yellow"
-  - "brightbrown" → Rich expects "bright_yellow"
-  - "bfightmagenta" → typo in pyte, should be "bright_magenta"
-
-This monkey-patches pyte.graphics at import time so all color names
-are Rich-compatible from the source, eliminating the need for a
-runtime translation table in terminal_pane.py.
+1. Color names: Rich-compatible patches for pyte.graphics
+2. PreservingScreen: HistoryScreen subclass that preserves content on resize
 
 Call apply() once at startup, before any pyte Screen is created.
 """
 
 from __future__ import annotations
+
+import pyte
 
 
 def apply() -> None:
@@ -49,3 +45,52 @@ def apply() -> None:
         g.FG.update(_BRIGHT_FG)
     if hasattr(g, "BG"):
         g.BG.update(_BRIGHT_BG)
+
+
+class PreservingScreen(pyte.HistoryScreen):
+    """HistoryScreen that preserves content on vertical resize.
+
+    pyte's HistoryScreen.resize() discards lines when shrinking vertically
+    (pyte issue #31, open since 2015). This subclass pushes deleted top
+    lines into history.top on shrink, and restores them on expand.
+
+    Horizontal reflow is NOT handled — the PTY re-renders on SIGWINCH.
+    """
+
+    def resize(self, lines: int | None = None, columns: int | None = None) -> None:
+        lines = lines or self.lines
+        columns = columns or self.columns
+        if lines == self.lines and columns == self.columns:
+            return
+
+        old_lines = self.lines
+
+        # Shrink: save top lines that will be deleted
+        if lines < old_lines:
+            n_deleted = old_lines - lines
+            for y in range(n_deleted):
+                if y in self.buffer:
+                    self.history.top.append(self.buffer[y])
+
+        # Call base Screen.resize (skip HistoryScreen's version)
+        pyte.Screen.resize(self, lines, columns)
+
+        # Expand: restore lines from history
+        if lines > old_lines and self.history.top:
+            n_restore = min(lines - old_lines, len(self.history.top))
+            if n_restore > 0:
+                # Shift existing content down
+                for y in range(lines - 1, n_restore - 1, -1):
+                    src = y - n_restore
+                    if src in self.buffer:
+                        self.buffer[y] = self.buffer.pop(src)
+                    else:
+                        self.buffer.pop(y, None)
+                # Fill top rows from history
+                for y in range(n_restore - 1, -1, -1):
+                    self.buffer[y] = self.history.top.pop()
+                self.cursor.y = min(self.cursor.y + n_restore, lines - 1)
+                self.dirty.update(range(lines))
+
+        self.cursor.y = min(self.cursor.y, lines - 1)
+        self.cursor.x = min(self.cursor.x, columns - 1)

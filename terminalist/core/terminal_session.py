@@ -60,8 +60,9 @@ class TerminalSession:
         # PTY backend (composable, swappable)
         self._backend: PtyBackend = backend or WinPtyBackend()
 
-        # pyte virtual terminal
-        self._screen = pyte.HistoryScreen(cols, rows, history=5000)
+        # pyte virtual terminal (PreservingScreen keeps content on resize)
+        from terminalist.pyte_patch import PreservingScreen
+        self._screen = PreservingScreen(cols, rows, history=5000)
         self._stream = pyte.Stream(self._screen)
         self._lock = threading.Lock()
 
