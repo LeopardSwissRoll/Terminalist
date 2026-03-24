@@ -160,17 +160,23 @@ class Compositor:
 
             self._writer.reset_attrs()
             self._writer.show_cursor()
+            self._writer.flush()
+            self._prev_frame = curr_frame
+            self._dirty = False
+
+            if cells_written > 0:
+                log("render", f"Rendered {cells_written} cells ({self._width}x{self._height})")
         except Exception as e:
             log("render", f"RENDER ERROR: {type(e).__name__}: {e}")
             import traceback
             log("render", traceback.format_exc())
-        self._writer.flush()
-
-        self._prev_frame = curr_frame
-        self._dirty = False
-
-        if cells_written > 0:
-            log("render", f"Rendered {cells_written} cells ({self._width}x{self._height})")
+            # Try to recover: show cursor, flush partial output
+            try:
+                self._writer.show_cursor()
+                self._writer.flush()
+            except Exception:
+                pass
+            self._dirty = True  # retry next tick
 
     def full_redraw(self) -> None:
         """Force full redraw on next render."""

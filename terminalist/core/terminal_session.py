@@ -260,12 +260,13 @@ class TerminalSession:
                     self._stream.feed(data)
                     self._dirty_rows.update(self._screen.dirty)
                     self._screen.dirty.clear()
-                    display_tail = list(self._screen.display)
                     cursor = (self._screen.cursor.x, self._screen.cursor.y)
                 dirty_count = len(self._dirty_rows)
                 if dirty_count > 0:
                     log("pyte", f"[{self.session_id}] dirty_rows={dirty_count} listeners={len(self._on_dirty_listeners)}")
                 if is_enabled():
+                    # Use _read_line (CJK-safe) instead of screen.display (crashes on stubs)
+                    display_tail = [self._read_line(y) for y in range(self._screen.lines)]
                     log_screen_snapshot(
                         self.session_id,
                         display_tail,
