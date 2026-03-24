@@ -31,20 +31,22 @@ tmux의 키바인딩/UX를 기본으로 하되, Terminalist의 기능은 superse
 
 ## 현재 상태
 
-**완료 (검증됨):**
-- `core/` — TerminalSession(PtyProcess+pyte), LLMSession ABC, Claude/Codex/Shell 세션, SessionManager
-- `events/` — TES 3채널 (Data/Control/State), EventStreamManager
-- `keymap.py` — 키바인딩 단일 진실
-- `vt100.py` — Textual key name → VT100 시퀀스 매핑
-- `pyte_patch.py` — pyte 색 이름 Rich 호환 패치
-- `debug.py` — 레이어별 로깅
+**완료 (검증됨, 100개 테스트 통과):**
+- `core/` — PtyBackend ABC, WinPtyBackend, TerminalSession, Pane+Rect, LLM/Claude/Codex/Shell 세션, SessionManager
+- `events/` — TES 3채널 (Data/Control/State) + cursor-based GC + JSONL 파일 로그
+- `input/` — ReadConsoleInputW 백엔드, 한글 IME, paste 감지, DA 필터, prefix FSM
+- `frontend/` — Split tree (layout/mutation/neighbor), screen_sync, vt100_writer, Compositor (diff 렌더)
+- `keymap.py` — 액션 바인딩 단일 진실
+- `interactive.py` — 단일 세션 인터랙티브 셸 (Claude/Codex/PowerShell 검증됨)
+- `dualrun.py` — VSCode + 외부 PowerShell 동시 테스트
+- `debug.py` — 환경 감지 + 분리 로그
 
-**구현 필요:**
-- `app.py` — 메인 루프 (입력→디스패치→렌더)
-- Split 이진 트리 (레이아웃)
-- Layer + Compositor (화면 합성 + diff 렌더)
-- 입력 백엔드 (os.read + 키 파싱 + SGR 마우스)
+**구현 필요 (Phase 4+):**
+- `app.py` — 메인 루프 (multi-pane 입력→디스패치→렌더)
 - 상태바/탭바 (Layer 1)
+- 마우스 입력 (SGR 마우스)
+- Flow (LLM 입출력 파이프라인)
+- Remote (WebSocket)
 
 ## 아키텍처 원칙 (반드시 지킬 것)
 
@@ -119,10 +121,13 @@ terminalist/
 - IME 한국어 상태에서 Ctrl+키가 자모로 변환됨
 - ConPTY의 ReadConsoleInputW는 vkCode=0으로 Ctrl+키를 보냄 → os.read(stdin)으로 우회
 
-## 핵심 참고 자료 (reference/ 디렉토리)
+## 핵심 참고 자료
 
-- `architecture-design.md` — Split 트리 + Layer + Compositor 설계 (~300줄)
+**reference/ 디렉토리:**
 - `architecture-references.md` — pymux/ptterm/tmux/prompt-toolkit 리서치 결과 (클래스 분해, 렌더링 최적화, 이벤트 큐, 입력 파싱 패턴)
-- `fakeTerm.py` / `fakeTerm.md` — Windows PTY 패턴 (PtyProcess, DA drain, 키 매핑)
-- `ctrl-key-investigation.html` — Ctrl+키 입력 문제 조사 보고서 (삽질 방지용)
+- `fakeTerm.py` / `fakeTerm.md` — Windows PTY 패턴 (ReadConsoleInputW, IME, paste, DA 필터, 10가지 입력 문제 해결)
 - `textual-exit-plan.md` — 이전 TUI 프레임워크에서 직접 제어로 전환한 설계 문서
+
+**docs/ 디렉토리 (HTML 조사 보고서):**
+- `ctrl-key-investigation.html` — Ctrl+키 입력 문제 조사 (삽질 방지용)
+- `tmux-guide.html`, `textual-*.html`, `fakeTerm_review.html` — 이전 리서치 아카이브
