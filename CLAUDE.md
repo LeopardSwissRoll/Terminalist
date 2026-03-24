@@ -126,8 +126,7 @@ terminalist/
 **reference/ 디렉토리:**
 - `architecture-references.md` — pymux/ptterm/tmux/prompt-toolkit 리서치 결과 (클래스 분해, 렌더링 최적화, 이벤트 큐, 입력 파싱 패턴)
 - `fakeTerm.py` / `fakeTerm.md` — Windows PTY 패턴 (ReadConsoleInputW, IME, paste, DA 필터, 10가지 입력 문제 해결)
-- `textual-exit-plan.md` — 이전 TUI 프레임워크에서 직접 제어로 전환한 설계 문서
 
-**docs/ 디렉토리 (HTML 조사 보고서):**
+**docs/ 디렉토리:**
 - `ctrl-key-investigation.html` — Ctrl+키 입력 문제 조사 (삽질 방지용)
-- `tmux-guide.html`, `textual-*.html`, `fakeTerm_review.html` — 이전 리서치 아카이브
+- `archive/` — Textual 시대 리서치 HTML, textual-exit-plan.md (전환 완료된 설계문서)
