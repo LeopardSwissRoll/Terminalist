@@ -26,7 +26,9 @@ from terminalist.debug import log
 STD_INPUT_HANDLE = -10
 STD_OUTPUT_HANDLE = -11
 KEY_EVENT = 0x0001
+MOUSE_EVENT = 0x0002
 ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+ENABLE_MOUSE_INPUT = 0x0010
 
 kernel32 = ctypes.windll.kernel32
 user32 = ctypes.windll.user32
@@ -45,8 +47,29 @@ class KEY_EVENT_RECORD(ctypes.Structure):
     ]
 
 
+class COORD(ctypes.Structure):
+    _fields_ = [("X", wt.SHORT), ("Y", wt.SHORT)]
+
+
+class MOUSE_EVENT_RECORD(ctypes.Structure):
+    _fields_ = [
+        ("dwMousePosition", COORD),
+        ("dwButtonState", wt.DWORD),
+        ("dwControlKeyState", wt.DWORD),
+        ("dwEventFlags", wt.DWORD),
+    ]
+
+
+# Mouse event flags
+MOUSE_WHEELED = 0x0004
+MOUSE_HWHEELED = 0x0008
+
+
 class INPUT_RECORD_UNION(ctypes.Union):
-    _fields_ = [("KeyEvent", KEY_EVENT_RECORD)]
+    _fields_ = [
+        ("KeyEvent", KEY_EVENT_RECORD),
+        ("MouseEvent", MOUSE_EVENT_RECORD),
+    ]
 
 
 class INPUT_RECORD(ctypes.Structure):
@@ -107,15 +130,27 @@ def enable_vt() -> None:
 
 
 def enter_alt_screen() -> None:
-    sys.stdout.write("\x1b[?1049h\x1b[H\x1b[2J")
+    sys.stdout.write(
+        "\x1b[?1049h"   # alt screen
+        "\x1b[H"        # cursor home
+        "\x1b[2J"       # clear
+        "\x1b[?1000h"   # enable mouse click reporting
+        "\x1b[?1003h"   # enable mouse all-motion reporting
+        "\x1b[?1006h"   # enable SGR mouse mode (modern, coordinates > 223)
+    )
     sys.stdout.flush()
-    log("app", "Entered alt screen")
+    log("app", "Entered alt screen + SGR mouse mode")
 
 
 def exit_alt_screen() -> None:
-    sys.stdout.write("\x1b[?1049l")
+    sys.stdout.write(
+        "\x1b[?1006l"   # disable SGR mouse
+        "\x1b[?1003l"   # disable mouse all-motion
+        "\x1b[?1000l"   # disable mouse click
+        "\x1b[?1049l"   # exit alt screen
+    )
     sys.stdout.flush()
-    log("app", "Exited alt screen")
+    log("app", "Exited alt screen + mouse mode")
 
 
 def terminal_size() -> tuple[int, int]:
@@ -148,8 +183,10 @@ class RawConsoleInput:
 
     def __enter__(self) -> int:
         kernel32.GetConsoleMode(self.h_in, ctypes.byref(self._old_mode))
-        kernel32.SetConsoleMode(self.h_in, 0)
-        log("input", f"Console raw mode set (old=0x{self._old_mode.value:04x})")
+        # Raw mode + mouse input enabled
+        # 0x0010 = ENABLE_MOUSE_INPUT (receive MOUSE_EVENT records)
+        kernel32.SetConsoleMode(self.h_in, 0x0010)
+        log("input", f"Console raw mode + mouse set (old=0x{self._old_mode.value:04x})")
         return self.h_in
 
     def __exit__(self, *exc) -> None:
@@ -160,15 +197,27 @@ class RawConsoleInput:
 # ── Record reading ──
 
 
-def read_one_record(h_in: int) -> KeyEvent | None:
+# Mouse event tuple: (x, y, button_state, event_flags)
+MouseEvent = tuple[int, int, int, int]
+
+
+def read_one_record(h_in: int) -> KeyEvent | MouseEvent | None:
     """Read one console input record. Non-blocking per record.
 
-    Returns (char, vk, ctrl, repeat) for KEY_DOWN, None otherwise.
-    Caller must check has_events() before calling.
+    Returns:
+        KeyEvent (char, vk, ctrl, repeat) for KEY_DOWN
+        MouseEvent (x, y, buttons, flags) for MOUSE_EVENT — caller checks type by length
+        None for other events (KEY_UP, focus, etc.)
     """
     record = INPUT_RECORD()
     read_count = wt.DWORD()
     kernel32.ReadConsoleInputW(h_in, ctypes.byref(record), 1, ctypes.byref(read_count))
+
+    if record.EventType == MOUSE_EVENT:
+        me = record.Event.MouseEvent
+        return (me.dwMousePosition.X, me.dwMousePosition.Y,
+                me.dwButtonState, me.dwEventFlags)
+
     if record.EventType != KEY_EVENT:
         return None
     ke = record.Event.KeyEvent
@@ -196,17 +245,24 @@ def has_events(h_in: int) -> bool:
     return avail.value > 0
 
 
-def read_batch(h_in: int, limit: int = 4096) -> list[KeyEvent]:
-    """Read all available KEY_DOWN events. Non-blocking.
+def read_batch(h_in: int, limit: int = 4096) -> tuple[list[KeyEvent], list[MouseEvent]]:
+    """Read all available events. Non-blocking.
 
-    Uses read_one_record to avoid hanging on non-KEY events
-    (mouse, focus) that VSCode sends.
+    Returns (key_events, mouse_events).
+    KeyEvent: 4-tuple (char, vk, ctrl, repeat)
+    MouseEvent: 4-tuple (x, y, buttons, flags)
     """
-    events: list[KeyEvent] = []
+    keys: list[KeyEvent] = []
+    mice: list[MouseEvent] = []
     while has_events(h_in):
         result = read_one_record(h_in)
-        if result is not None:
-            events.append(result)
-        if len(events) >= limit:
+        if result is None:
+            continue
+        # Distinguish by checking if first element is int (mouse x) or str/None (key char)
+        if isinstance(result[0], int):
+            mice.append(result)  # type: ignore[arg-type]
+        else:
+            keys.append(result)  # type: ignore[arg-type]
+        if len(keys) + len(mice) >= limit:
             break
-    return events
+    return keys, mice

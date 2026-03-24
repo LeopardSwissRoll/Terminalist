@@ -254,11 +254,11 @@ def run_input_loop(
                 time.sleep(0.01)
                 continue
 
-            events = read_batch(h_in)
-            if not events:
+            keys, _mice = read_batch(h_in)
+            if not keys:
                 continue
 
-            result = process_events(events, write, state, on_prefix_key=None, h_in=h_in)
+            result = process_events(keys, write, state, on_prefix_key=None, h_in=h_in)
             if result == "exit":
                 break
 

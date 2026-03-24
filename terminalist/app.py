@@ -164,11 +164,20 @@ class App:
 
             # ── Input ──
             if has_events(h_in):
-                events = read_batch(h_in)
-                if events:
+                keys, mice = read_batch(h_in)
+
+                # Mouse events — log for now, Phase 5 will route to panes
+                for mx, my, buttons, flags in mice:
+                    if flags & 0x0004:  # MOUSE_WHEELED
+                        direction = "up" if buttons & 0x80000000 else "down"
+                        log("mouse", f"scroll {direction} at ({mx},{my})")
+                    elif buttons:
+                        log("mouse", f"click buttons=0x{buttons:04X} at ({mx},{my})")
+
+                if keys:
                     write_target = self._focused.write_raw if self._focused else lambda s: None
                     result = process_events(
-                        events,
+                        keys,
                         write_target,
                         self._input_state,
                         on_prefix_key=self._dispatch_prefix,
