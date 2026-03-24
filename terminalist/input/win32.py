@@ -134,23 +134,17 @@ def enter_alt_screen() -> None:
         "\x1b[?1049h"   # alt screen
         "\x1b[H"        # cursor home
         "\x1b[2J"       # clear
-        "\x1b[?1000h"   # enable mouse click reporting
-        "\x1b[?1003h"   # enable mouse all-motion reporting
-        "\x1b[?1006h"   # enable SGR mouse mode (modern, coordinates > 223)
+        # No SGR mouse — using ENABLE_MOUSE_INPUT (Windows API) instead.
+        # SGR + ENABLE_MOUSE_INPUT together causes duplicate/conflicting events.
     )
     sys.stdout.flush()
-    log("app", "Entered alt screen + SGR mouse mode")
+    log("app", "Entered alt screen")
 
 
 def exit_alt_screen() -> None:
-    sys.stdout.write(
-        "\x1b[?1006l"   # disable SGR mouse
-        "\x1b[?1003l"   # disable mouse all-motion
-        "\x1b[?1000l"   # disable mouse click
-        "\x1b[?1049l"   # exit alt screen
-    )
+    sys.stdout.write("\x1b[?1049l")
     sys.stdout.flush()
-    log("app", "Exited alt screen + mouse mode")
+    log("app", "Exited alt screen")
 
 
 def terminal_size() -> tuple[int, int]:
@@ -231,11 +225,18 @@ def read_one_record(h_in: int) -> KeyEvent | MouseEvent | None:
 
 
 def read_key_blocking(h_in: int) -> KeyEvent:
-    """Read one KEY_DOWN event. Blocks until one arrives."""
+    """Read one KEY_DOWN event. Blocks until one arrives.
+
+    Silently consumes MouseEvent and other non-key records.
+    """
     while True:
         result = read_one_record(h_in)
-        if result is not None:
-            return result
+        if result is None:
+            continue
+        # Skip MouseEvent (first element is int, not str/None)
+        if isinstance(result[0], int):
+            continue
+        return result
 
 
 def has_events(h_in: int) -> bool:
