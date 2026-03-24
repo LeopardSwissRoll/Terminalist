@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -15,6 +14,8 @@ from terminalist.frontend.split_tree import (
     split_pane, remove_pane, find_neighbor, borders,
     MIN_PANE_W, MIN_PANE_H,
 )
+
+from conftest import mock_pane as _mock_pane
 
 results: list[tuple[str, bool, str]] = []
 
@@ -30,23 +31,6 @@ def run_test(name, fn):
     except Exception as e:
         print(f"  FAIL  {name}: {type(e).__name__}: {e}")
         results.append((name, False, str(e)))
-
-
-def _mock_pane(pane_id: str) -> Pane:
-    """Create a Pane with a mock session (no PTY needed)."""
-    session = MagicMock()
-    session.session_id = pane_id
-    session._screen = MagicMock()
-    session._screen.columns = 80
-    session._screen.lines = 24
-    p = Pane.__new__(Pane)
-    p.pane_id = pane_id
-    p.session = session
-    p.rect = Rect(0, 0, 80, 24)
-    p.focused = False
-    p._copy_mode = False
-    p._scroll_offset = 0
-    return p
 
 
 # ══════════════════════════════════════════════

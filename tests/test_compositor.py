@@ -2,21 +2,18 @@
 
 from __future__ import annotations
 
-import io
 import sys
-import threading
 from pathlib import Path
-from unittest.mock import MagicMock
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import pyte
 from pyte.screens import Char
 
-from terminalist.core.pane import Pane, Rect
-from terminalist.frontend.compositor import Compositor, EMPTY_CHAR, BORDER_V_CHAR, BORDER_H_CHAR
+from terminalist.core.pane import Rect
+from terminalist.frontend.compositor import EMPTY_CHAR, BORDER_V_CHAR, BORDER_H_CHAR
 from terminalist.frontend.split_tree import Direction, Leaf, Split, layout
-from terminalist.frontend.vt100_writer import VT100Writer
+
+from conftest import make_pane as _make_pane, capture_compositor as _capture_compositor, feed_pane
 
 results: list[tuple[str, bool, str]] = []
 
@@ -32,49 +29,6 @@ def run_test(name, fn):
     except Exception as e:
         print(f"  FAIL  {name}: {type(e).__name__}: {e}")
         results.append((name, False, str(e)))
-
-
-def _make_pane(pane_id: str, cols: int = 20, rows: int = 5, text: str = "") -> Pane:
-    """Create a Pane with a real pyte screen (no PTY needed)."""
-    screen = pyte.Screen(cols, rows)
-    stream = pyte.Stream(screen)
-    if text:
-        stream.feed(text)
-    lock = threading.Lock()
-
-    # Build a pane with real screen but mock backend
-    session = MagicMock()
-    session.session_id = pane_id
-    session._screen = screen
-    session._lock = lock
-    session._stream = stream
-    session.resize = MagicMock()
-
-    p = Pane.__new__(Pane)
-    p.pane_id = pane_id
-    p.session = session
-    p.rect = Rect(0, 0, cols, rows)
-    p.focused = False
-    p._copy_mode = False
-    p._scroll_offset = 0
-    return p
-
-
-def _capture_compositor(w: int, h: int) -> tuple[Compositor, list[str]]:
-    """Create compositor with captured output."""
-    output: list[str] = []
-    writer = VT100Writer()
-    # Patch flush to capture
-    orig_buf = writer._buf
-
-    def patched_flush():
-        data = "".join(writer._buf)
-        writer._buf.clear()
-        output.append(data)
-
-    writer.flush = patched_flush
-    comp = Compositor(w, h, writer)
-    return comp, output
 
 
 # ══════════════════════════════════════════════
@@ -191,7 +145,7 @@ def test_render_one_cell_change():
     comp.render(root, Rect(0, 0, 10, 2))  # initial
 
     # Modify one cell
-    pane.session._stream.feed("\x1b[1;3HX")  # move to col 3 row 1, write X
+    feed_pane(pane, "\x1b[1;3HX")  # move to col 3 row 1, write X
 
     comp._dirty = True
     comp.render(root, Rect(0, 0, 10, 2))  # diff render

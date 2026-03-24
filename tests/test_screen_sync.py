@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import sys
-import threading
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import pyte
 from pyte.screens import Char
 
 from terminalist.frontend.screen_sync import extract_grid, extract_cursor, EMPTY_CHAR
+
+from conftest import make_screen as _make_screen
 
 results: list[tuple[str, bool, str]] = []
 
@@ -27,13 +27,6 @@ def run_test(name, fn):
     except Exception as e:
         print(f"  FAIL  {name}: {type(e).__name__}: {e}")
         results.append((name, False, str(e)))
-
-
-def _make_screen(cols=20, rows=5) -> tuple[pyte.Screen, pyte.Stream, threading.Lock]:
-    s = pyte.Screen(cols, rows)
-    st = pyte.Stream(s)
-    lock = threading.Lock()
-    return s, st, lock
 
 
 def test_empty_screen():
