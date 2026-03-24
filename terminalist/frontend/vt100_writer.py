@@ -35,13 +35,23 @@ _BG_CODES: dict[str, str] = {
 
 
 def _fg_sgr(color: str) -> str:
-    """Convert fg color to SGR parameter string."""
+    """Convert fg color to SGR parameter string.
+
+    pyte stores colors as:
+    - "default", "red", "bright_cyan" etc. → named ANSI
+    - "ff8000" (6 hex digits, NO #) → 24-bit color
+    - "#rrggbb" (with #) → also 24-bit (just in case)
+    """
     if color in _FG_CODES:
         return _FG_CODES[color]
-    # 256-color or 24-bit: pyte stores as "N" or "#rrggbb" (via pyte_patch)
-    if color.startswith("#") and len(color) == 7:
-        r, g, b = int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
-        return f"38;2;{r};{g};{b}"
+    # 24-bit hex: pyte stores as "rrggbb" (no #) or "#rrggbb"
+    hex_color = color.lstrip("#")
+    if len(hex_color) == 6:
+        try:
+            r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+            return f"38;2;{r};{g};{b}"
+        except ValueError:
+            pass
     try:
         return f"38;5;{int(color)}"
     except ValueError:
@@ -52,9 +62,13 @@ def _bg_sgr(color: str) -> str:
     """Convert bg color to SGR parameter string."""
     if color in _BG_CODES:
         return _BG_CODES[color]
-    if color.startswith("#") and len(color) == 7:
-        r, g, b = int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
-        return f"48;2;{r};{g};{b}"
+    hex_color = color.lstrip("#")
+    if len(hex_color) == 6:
+        try:
+            r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+            return f"48;2;{r};{g};{b}"
+        except ValueError:
+            pass
     try:
         return f"48;5;{int(color)}"
     except ValueError:

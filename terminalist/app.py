@@ -264,6 +264,13 @@ class App:
         if not self._focused or not self._root:
             return
 
+        # If zoomed, exit zoom first and operate on the real tree
+        if self._zoom_pane:
+            real_root = self._pre_zoom_root
+            self._zoom_pane = None
+            self._pre_zoom_root = None
+            self._root = real_root
+
         old_id = self._focused.pane_id
         old_session_id = self._focused.session.session_id
 
