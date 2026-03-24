@@ -81,6 +81,9 @@ class App:
         self._zoom_pane: Pane | None = None
         self._pre_zoom_root: SplitNode | None = None
 
+        # Delayed redraw after split/resize (give PTY time to re-render)
+        self._pending_redraw_at: float = 0.0
+
     def run(self) -> None:
         """Main entry point."""
         env = detect_env()
@@ -176,6 +179,11 @@ class App:
             else:
                 time.sleep(0.01)
 
+            # ── Pending full redraw (after split/resize, PTY had time to re-render) ──
+            if self._pending_redraw_at and time.monotonic() >= self._pending_redraw_at:
+                self._pending_redraw_at = 0.0
+                self._compositor.full_redraw()
+
             # ── Render ──
             if self._compositor.needs_render() and self._root:
                 rows, cols = last_size
@@ -255,7 +263,11 @@ class App:
         self._root = split_pane(self._root, self._focused.pane_id, new_pane, direction)
         rows, cols = terminal_size()
         layout(self._root, Rect(0, 0, cols, rows))
-        self._compositor.full_redraw()
+        # Don't full_redraw immediately — PTY needs time to re-render after resize.
+        # mark_dirty lets the next tick render after PTY output arrives.
+        self._compositor.mark_dirty()
+        # But also schedule a delayed full_redraw to catch PTY re-renders
+        self._pending_redraw_at = time.monotonic() + 0.1
         log("app", f"Split {direction.value}: {self._focused.pane_id} + {new_pane.pane_id}")
 
     # ── Close pane ──
@@ -297,7 +309,8 @@ class App:
 
         rows, cols = terminal_size()
         layout(self._root, Rect(0, 0, cols, rows))
-        self._compositor.full_redraw()
+        self._compositor.mark_dirty()
+        self._pending_redraw_at = time.monotonic() + 0.1
         log("app", f"Closed pane {old_id}, focused {self._focused.pane_id}")
 
     # ── Focus navigation ──
@@ -336,7 +349,8 @@ class App:
 
         rows, cols = terminal_size()
         layout(self._root, Rect(0, 0, cols, rows))
-        self._compositor.full_redraw()
+        self._compositor.mark_dirty()
+        self._pending_redraw_at = time.monotonic() + 0.1
         log("app", f"New {provider} session in split: {new_pane.pane_id}")
 
     # ── Zoom ──
@@ -360,7 +374,8 @@ class App:
 
         rows, cols = terminal_size()
         layout(self._root, Rect(0, 0, cols, rows))
-        self._compositor.full_redraw()
+        self._compositor.mark_dirty()
+        self._pending_redraw_at = time.monotonic() + 0.1
 
     # ── Cleanup ──
 
