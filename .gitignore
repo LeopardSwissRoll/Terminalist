@@ -16,3 +16,4 @@ venv/
 *.swo
 *~
 .claude/
+tests/output/
