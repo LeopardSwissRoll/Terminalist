@@ -1,23 +1,359 @@
-"""Terminalist — Main entry point.
+"""Terminalist — Terminal multiplexer with compositor rendering.
 
-Currently a minimal skeleton for debug/smoke testing.
-Full implementation (input loop, compositor, chrome) is pending.
+Multi-pane terminal multiplexer. Each pane runs a PTY session
+(PowerShell, Claude, Codex) rendered via pyte + compositor diff.
 
 Usage:
     python -m terminalist.app [--debug]
-    terminalist [--debug]               (after pip install -e .)
+    terminalist [--debug]
+
+Keys (Ctrl+B prefix):
+    v/h     split vertical/horizontal
+    arrows  focus pane
+    x       close pane
+    z       zoom (toggle fullscreen)
+    s       new shell
+    c       new Claude session
+    o       new Codex session
+    Ctrl+C  quit
+    Ctrl+B  send literal Ctrl+B
 """
 
 from __future__ import annotations
 
 import argparse
+import signal
 import sys
 import time
+from pathlib import Path
 
-from terminalist.debug import init_debug, log, detect_env
-from terminalist.pyte_patch import apply as patch_pyte
-from terminalist.events.tes import EventStreamManager
+from terminalist.core.pane import Pane, Rect
 from terminalist.core.session_manager import SessionManager
+from terminalist.core.terminal_session import SessionState
+from terminalist.debug import init_debug, log, detect_env
+from terminalist.events.tes import EventStreamManager
+from terminalist.frontend.compositor import Compositor
+from terminalist.frontend.split_tree import (
+    Direction,
+    Leaf,
+    Split,
+    SplitNode,
+    all_panes,
+    can_split,
+    find_neighbor,
+    layout,
+    remove_pane,
+    split_pane,
+)
+from terminalist.frontend.vt100_writer import VT100Writer
+from terminalist.input.handler import InputState, process_events
+from terminalist.input.win32 import (
+    RawConsoleInput,
+    enable_vt,
+    enter_alt_screen,
+    exit_alt_screen,
+    has_events,
+    read_batch,
+    terminal_size,
+)
+from terminalist.pyte_patch import apply as patch_pyte
+
+
+class App:
+    """Terminalist multi-pane terminal multiplexer."""
+
+    def __init__(self, debug: bool = False, debug_log: str | None = None) -> None:
+        init_debug(enabled=debug, log_path=debug_log)
+        patch_pyte()
+        enable_vt()
+
+        self._tes = EventStreamManager()
+        self._sm = SessionManager(self._tes)
+        self._root: SplitNode | None = None
+        self._focused: Pane | None = None
+        self._writer = VT100Writer()
+        self._compositor: Compositor | None = None
+        self._running = False
+        self._pane_counter = 0
+        self._input_state = InputState()
+
+        # Zoom state
+        self._zoom_pane: Pane | None = None
+        self._pre_zoom_root: SplitNode | None = None
+
+    def run(self) -> None:
+        """Main entry point."""
+        env = detect_env()
+        rows, cols = terminal_size()
+        log("app", f"=== Terminalist starting (env={env}, {cols}x{rows}) ===")
+
+        enter_alt_screen()
+        self._compositor = Compositor(cols, rows, self._writer)
+
+        # Create initial shell pane
+        pane = self._create_pane("powershell")
+        self._root = Leaf(pane)
+        self._focused = pane
+        pane.focused = True
+        layout(self._root, Rect(0, 0, cols, rows))
+        self._compositor.full_redraw()
+
+        self._running = True
+
+        # SIGINT → forward to active PTY
+        prev_handler = signal.getsignal(signal.SIGINT)
+        def on_sigint(_s, _f):
+            if self._focused:
+                try:
+                    self._focused.write_raw("\x03")
+                except Exception:
+                    pass
+        signal.signal(signal.SIGINT, on_sigint)
+
+        try:
+            with RawConsoleInput() as h_in:
+                self._main_loop(h_in)
+        except Exception as e:
+            log("app", f"CRASHED: {type(e).__name__}: {e}")
+            import traceback
+            log("app", traceback.format_exc())
+        finally:
+            signal.signal(signal.SIGINT, prev_handler)
+            self._cleanup()
+            exit_alt_screen()
+            log("app", "=== Terminalist exited ===")
+            print("[terminalist] Session ended.")
+
+    def _main_loop(self, h_in: int) -> None:
+        """Tick loop: input → render."""
+        last_size = terminal_size()
+
+        while self._running:
+            # Any pane alive?
+            if self._root is None:
+                break
+            panes = all_panes(self._root)
+            if not panes:
+                break
+            if not any(p.session._backend.is_alive() for p in panes):
+                break
+
+            # ── Resize check ──
+            new_size = terminal_size()
+            if new_size != last_size:
+                last_size = new_size
+                rows, cols = new_size
+                self._compositor.resize(cols, rows)
+                layout(self._root, Rect(0, 0, cols, rows))
+                self._compositor.full_redraw()
+                log("app", f"Terminal resized: {cols}x{rows}")
+
+            # ── Input ──
+            if has_events(h_in):
+                events = read_batch(h_in)
+                if events:
+                    write_target = self._focused.write_raw if self._focused else lambda s: None
+                    result = process_events(
+                        events,
+                        write_target,
+                        self._input_state,
+                        on_prefix_key=self._dispatch_prefix,
+                        h_in=h_in,
+                    )
+                    if result == "exit":
+                        break
+            else:
+                time.sleep(0.01)
+
+            # ── Render ──
+            if self._compositor.needs_render() and self._root:
+                rows, cols = last_size
+                rect = Rect(0, 0, cols, rows)
+                self._compositor.render(self._root, rect, self._focused)
+
+    # ── Pane creation ──
+
+    def _create_pane(self, provider: str) -> Pane:
+        """Create a new pane with a PTY session."""
+        self._pane_counter += 1
+        pane_id = f"pane_{self._pane_counter}"
+
+        workspace = "."
+        if self._focused and hasattr(self._focused.session, "current_dir"):
+            workspace = str(self._focused.session.current_dir)
+
+        session = self._sm.create(provider, workspace=workspace)
+        pane = Pane(pane_id, session)
+
+        # Connect dirty listener → compositor
+        session.add_dirty_listener(self._compositor.mark_dirty)
+
+        # Track bracketed paste from PTY output
+        session._on_raw_output.append(self._input_state.track_bracketed_paste)
+
+        log("app", f"Created pane {pane_id} ({provider}) session={session.session_id}")
+        return pane
+
+    # ── Prefix action dispatch ──
+
+    def _dispatch_prefix(self, action: str, input_count: int) -> None:
+        """Handle prefix key action from keymap."""
+        log("app", f"Prefix action: {action}")
+
+        match action:
+            case "split_vertical":
+                self._split(Direction.VERTICAL)
+            case "split_horizontal":
+                self._split(Direction.HORIZONTAL)
+            case "close_pane":
+                self._close_pane()
+            case "focus_pane_up":
+                self._focus_direction(Direction.HORIZONTAL, False)
+            case "focus_pane_down":
+                self._focus_direction(Direction.HORIZONTAL, True)
+            case "focus_pane_left":
+                self._focus_direction(Direction.VERTICAL, False)
+            case "focus_pane_right":
+                self._focus_direction(Direction.VERTICAL, True)
+            case "new_shell":
+                self._new_session_split("powershell")
+            case "new_claude":
+                self._new_session_split("claude")
+            case "new_codex":
+                self._new_session_split("codex")
+            case "zoom_pane":
+                self._toggle_zoom()
+            case "confirm_quit" | "detach":
+                self._running = False
+            case "send_prefix_char":
+                if self._focused:
+                    self._focused.write_raw("\x02")
+            case _:
+                log("app", f"Unhandled prefix action: {action}")
+
+    # ── Split ──
+
+    def _split(self, direction: Direction) -> None:
+        if not self._focused or not self._root:
+            return
+        if not can_split(self._focused.rect, direction):
+            log("app", "Split rejected: pane too small")
+            return
+
+        new_pane = self._create_pane("powershell")
+        self._root = split_pane(self._root, self._focused.pane_id, new_pane, direction)
+        rows, cols = terminal_size()
+        layout(self._root, Rect(0, 0, cols, rows))
+        self._compositor.full_redraw()
+        log("app", f"Split {direction.value}: {self._focused.pane_id} + {new_pane.pane_id}")
+
+    # ── Close pane ──
+
+    def _close_pane(self) -> None:
+        if not self._focused or not self._root:
+            return
+
+        old_id = self._focused.pane_id
+        old_session_id = self._focused.session.session_id
+
+        # Find a neighbor to focus after close
+        neighbor = (
+            find_neighbor(self._root, old_id, Direction.VERTICAL, True)
+            or find_neighbor(self._root, old_id, Direction.VERTICAL, False)
+            or find_neighbor(self._root, old_id, Direction.HORIZONTAL, True)
+            or find_neighbor(self._root, old_id, Direction.HORIZONTAL, False)
+        )
+
+        # Remove from tree
+        self._root = remove_pane(self._root, old_id)
+        self._sm.destroy(old_session_id)
+
+        if self._root is None:
+            self._running = False
+            return
+
+        # Focus neighbor
+        self._focused.focused = False
+        self._focused = neighbor or all_panes(self._root)[0]
+        self._focused.focused = True
+
+        rows, cols = terminal_size()
+        layout(self._root, Rect(0, 0, cols, rows))
+        self._compositor.full_redraw()
+        log("app", f"Closed pane {old_id}, focused {self._focused.pane_id}")
+
+    # ── Focus navigation ──
+
+    def _focus_direction(self, direction: Direction, toward_second: bool) -> None:
+        if not self._focused or not self._root:
+            return
+        neighbor = find_neighbor(self._root, self._focused.pane_id, direction, toward_second)
+        if neighbor and neighbor != self._focused:
+            self._focused.focused = False
+            self._focused = neighbor
+            self._focused.focused = True
+            self._compositor.mark_dirty()
+            log("app", f"Focus → {self._focused.pane_id}")
+
+    # ── New session in split ──
+
+    def _new_session_split(self, provider: str) -> None:
+        """Create new session in a vertical split."""
+        if not self._focused or not self._root:
+            return
+        direction = Direction.VERTICAL
+        if not can_split(self._focused.rect, direction):
+            direction = Direction.HORIZONTAL
+            if not can_split(self._focused.rect, direction):
+                log("app", f"Cannot split for new {provider}: too small")
+                return
+
+        new_pane = self._create_pane(provider)
+        self._root = split_pane(self._root, self._focused.pane_id, new_pane, direction)
+
+        # Focus the new pane
+        self._focused.focused = False
+        self._focused = new_pane
+        self._focused.focused = True
+
+        rows, cols = terminal_size()
+        layout(self._root, Rect(0, 0, cols, rows))
+        self._compositor.full_redraw()
+        log("app", f"New {provider} session in split: {new_pane.pane_id}")
+
+    # ── Zoom ──
+
+    def _toggle_zoom(self) -> None:
+        if not self._focused or not self._root:
+            return
+
+        if self._zoom_pane:
+            # Restore from zoom
+            self._root = self._pre_zoom_root
+            self._zoom_pane = None
+            self._pre_zoom_root = None
+            log("app", "Zoom OFF")
+        else:
+            # Zoom focused pane
+            self._pre_zoom_root = self._root
+            self._zoom_pane = self._focused
+            self._root = Leaf(self._focused)
+            log("app", f"Zoom ON: {self._focused.pane_id}")
+
+        rows, cols = terminal_size()
+        layout(self._root, Rect(0, 0, cols, rows))
+        self._compositor.full_redraw()
+
+    # ── Cleanup ──
+
+    def _cleanup(self) -> None:
+        if self._root:
+            for pane in all_panes(self._root):
+                try:
+                    self._sm.destroy(pane.session.session_id)
+                except Exception:
+                    pass
+        self._tes.close()
 
 
 def parse_args() -> argparse.Namespace:
@@ -29,57 +365,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-
-    # ── Init ──
-    init_debug(enabled=args.debug, log_path=args.debug_log)
-    patch_pyte()
-    log("app", "=== Terminalist starting ===")
-    log("app", f"env={detect_env()}")
-
-    # ── TES ──
-    tes = EventStreamManager(
-        event_log_path=None  # TODO: enable when needed
-    )
-    log("app", "TES initialized")
-
-    # ── SessionManager ──
-    sm = SessionManager(tes)
-    log("app", "SessionManager initialized")
-
-    # ── Smoke: spawn a PowerShell session ──
-    print(f"[terminalist] env={detect_env()}, debug={'ON' if args.debug else 'OFF'}")
-    print("[terminalist] Spawning PowerShell session...")
-
-    session = sm.create("powershell", workspace=".")
-    log("app", f"Session created: {session.session_id}")
-
-    # Wait for ready
-    print("[terminalist] Waiting for shell ready...")
-    deadline = time.monotonic() + 10.0
-    while time.monotonic() < deadline:
-        if session.state.value == "ready":
-            break
-        time.sleep(0.1)
-
-    state = session.state.value
-    log("app", f"Session state after wait: {state}")
-    print(f"[terminalist] Session state: {state}")
-
-    # Show display
-    tail = session.get_display_tail(5)
-    log("app", f"Display tail ({len(tail)} lines):")
-    for i, line in enumerate(tail):
-        stripped = line.rstrip()
-        if stripped:
-            log("app", f"  {i}: {stripped!r}")
-            print(f"  [{i}] {stripped}")
-
-    # ── Cleanup ──
-    print("[terminalist] Cleaning up...")
-    sm.destroy(session.session_id)
-    tes.close()
-    log("app", "=== Terminalist exiting ===")
-    print("[terminalist] Done.")
+    app = App(debug=args.debug, debug_log=args.debug_log)
+    app.run()
 
 
 if __name__ == "__main__":

@@ -51,7 +51,11 @@ PREFIX_KEYS: list[KeyDef] = [
     KeyDef("3", "goto_tab_3", "Tab 3"),
     KeyDef("4", "goto_tab_4", "Tab 4"),
     KeyDef("5", "goto_tab_5", "Tab 5"),
-    # Ctrl+B → Ctrl+C = quit (with confirmation)
+    # Pane zoom (toggle fullscreen)
+    KeyDef("z", "zoom_pane", "Zoom"),
+    # Session management
+    KeyDef("d", "detach", "Detach"),
+    # Ctrl+B → Ctrl+C = quit
     KeyDef("ctrl+c", "confirm_quit", "Quit"),
     # Prefix twice → send literal prefix char to PTY
     KeyDef("ctrl+b", "send_prefix_char", "Send ^B"),

@@ -91,6 +91,10 @@ class Pane:
         """Get session screen content."""
         return self.session.get_display()
 
+    def get_cursor(self) -> tuple[int, int]:
+        """Get cursor position (x, y) from session's pyte screen."""
+        return (self.session._screen.cursor.x, self.session._screen.cursor.y)
+
     def write_raw(self, data: str) -> None:
         """Forward raw input to session PTY."""
         self.session.write_raw(data)
