@@ -96,17 +96,18 @@ class Compositor:
                         break
                     frame[fy][fx] = row[gx]
 
-        # Draw borders
-        border_segs = borders(root, rect)
+        # Draw borders (active = focused pane adjacent → bright color)
+        focused_id = focused_pane.pane_id if focused_pane else None
+        border_segs = borders(root, rect, focused_id)
         for seg in border_segs:
             if seg.direction == Direction.VERTICAL:
-                char = BORDER_V_CHAR
+                char = BORDER_V_ACTIVE if seg.active else BORDER_V_CHAR
                 for i in range(seg.length):
                     y = seg.y + i
                     if 0 <= y < self._height and 0 <= seg.x < self._width:
                         frame[y][seg.x] = char
             else:  # HORIZONTAL
-                char = BORDER_H_CHAR
+                char = BORDER_H_ACTIVE if seg.active else BORDER_H_CHAR
                 for i in range(seg.length):
                     x = seg.x + i
                     if 0 <= x < self._width and 0 <= seg.y < self._height:

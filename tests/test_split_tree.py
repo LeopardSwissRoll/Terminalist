@@ -331,6 +331,44 @@ def test_borders_nested():
     assert len(segs) == 2  # 1 horizontal + 1 vertical
 
 
+def test_borders_active_focused():
+    """Border adjacent to focused pane should be active."""
+    a, b = _mock_pane("a"), _mock_pane("b")
+    root = Split(Direction.VERTICAL, 0.5, Leaf(a), Leaf(b))
+    segs = borders(root, Rect(0, 0, 80, 24), focused_pane_id="a")
+    assert len(segs) == 1
+    assert segs[0].active is True
+
+
+def test_borders_active_none():
+    """No focused pane → no active borders."""
+    a, b = _mock_pane("a"), _mock_pane("b")
+    root = Split(Direction.VERTICAL, 0.5, Leaf(a), Leaf(b))
+    segs = borders(root, Rect(0, 0, 80, 24), focused_pane_id=None)
+    assert segs[0].active is False
+
+
+def test_borders_active_nested():
+    """In nested split, only borders adjacent to focused pane are active."""
+    a, b, c = _mock_pane("a"), _mock_pane("b"), _mock_pane("c")
+    root = Split(
+        Direction.HORIZONTAL, 0.5,
+        Leaf(a),
+        Split(Direction.VERTICAL, 0.5, Leaf(b), Leaf(c)),
+    )
+    segs = borders(root, Rect(0, 0, 80, 24), focused_pane_id="b")
+    # h-border (between a and b|c) — b is in second → active
+    # v-border (between b and c) — b is in first → active
+    assert all(seg.active for seg in segs), f"Expected all active, got {[s.active for s in segs]}"
+
+    # Now focus a — only h-border should be active, v-border not
+    segs2 = borders(root, Rect(0, 0, 80, 24), focused_pane_id="a")
+    h_segs = [s for s in segs2 if s.direction == Direction.HORIZONTAL]
+    v_segs = [s for s in segs2 if s.direction == Direction.VERTICAL]
+    assert h_segs[0].active is True   # a is adjacent to h-border
+    assert v_segs[0].active is False  # a is not adjacent to v-border
+
+
 # ══════════════════════════════════════════════
 #  Main
 # ══════════════════════════════════════════════
@@ -379,6 +417,9 @@ def main():
     run_test("borders_single_pane", test_borders_single_pane)
     run_test("borders_vertical_split", test_borders_vertical_split)
     run_test("borders_nested", test_borders_nested)
+    run_test("borders_active_focused", test_borders_active_focused)
+    run_test("borders_active_none", test_borders_active_none)
+    run_test("borders_active_nested", test_borders_active_nested)
 
     passed = sum(1 for _, ok, _ in results if ok)
     failed = sum(1 for _, ok, _ in results if not ok)
