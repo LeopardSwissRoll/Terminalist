@@ -41,6 +41,7 @@ from terminalist.frontend.split_tree import (
     all_panes,
     can_split,
     find_neighbor,
+    hit_test,
     layout,
     remove_pane,
     split_pane,
@@ -166,13 +167,19 @@ class App:
             if has_events(h_in):
                 keys, mice = read_batch(h_in)
 
-                # Mouse events — log for now, Phase 5 will route to panes
+                # Mouse events
                 for me in mice:
                     if me.flags & 0x0004:  # MOUSE_WHEELED
                         direction = "up" if me.buttons & 0x80000000 else "down"
                         log("mouse", f"scroll {direction} at ({me.x},{me.y})")
-                    elif me.buttons:
-                        log("mouse", f"click buttons=0x{me.buttons:04X} at ({me.x},{me.y})")
+                    elif me.buttons == 0x0001 and me.flags == 0:  # LEFT_CLICK (not drag)
+                        # Click-to-focus: hit test → set focus
+                        clicked = hit_test(self._root, me.x, me.y) if self._root else None
+                        if clicked and clicked != self._focused:
+                            self._set_focus(clicked)
+                            log("mouse", f"click → focus {clicked.pane_id} at ({me.x},{me.y})")
+                        else:
+                            log("mouse", f"click at ({me.x},{me.y}) (no pane change)")
 
                 if keys:
                     write_target = self._focused.write_raw if self._focused else lambda s: None

@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from terminalist.core.pane import Pane, Rect
 from terminalist.frontend.split_tree import (
     Direction, Leaf, Split, SplitNode, BorderSegment,
-    layout, all_panes, find_leaf, can_split,
+    layout, all_panes, find_leaf, can_split, hit_test,
     split_pane, remove_pane, find_neighbor, borders,
     MIN_PANE_W, MIN_PANE_H,
 )
@@ -370,6 +370,42 @@ def test_borders_active_nested():
 
 
 # ══════════════════════════════════════════════
+#  Hit test
+# ══════════════════════════════════════════════
+
+def test_hit_test_single_pane():
+    a = _mock_pane("a")
+    root = Leaf(a)
+    layout(root, Rect(0, 0, 80, 24))
+    assert hit_test(root, 0, 0).pane_id == "a"
+    assert hit_test(root, 79, 23).pane_id == "a"
+    assert hit_test(root, 80, 0) is None  # out of bounds
+
+
+def test_hit_test_vertical_split():
+    a, b = _mock_pane("a"), _mock_pane("b")
+    root = Split(Direction.VERTICAL, 0.5, Leaf(a), Leaf(b))
+    layout(root, Rect(0, 0, 80, 24))
+    assert hit_test(root, 0, 0).pane_id == "a"     # left pane
+    assert hit_test(root, 79, 0).pane_id == "b"    # right pane
+    assert hit_test(root, 39, 0) is None            # border
+
+
+def test_hit_test_nested():
+    a, b, c, d = _mock_pane("a"), _mock_pane("b"), _mock_pane("c"), _mock_pane("d")
+    root = Split(
+        Direction.HORIZONTAL, 0.5,
+        Split(Direction.VERTICAL, 0.5, Leaf(a), Leaf(b)),
+        Split(Direction.VERTICAL, 0.5, Leaf(c), Leaf(d)),
+    )
+    layout(root, Rect(0, 0, 80, 24))
+    assert hit_test(root, 0, 0).pane_id == "a"      # top-left
+    assert hit_test(root, 79, 0).pane_id == "b"     # top-right
+    assert hit_test(root, 0, 23).pane_id == "c"     # bottom-left
+    assert hit_test(root, 79, 23).pane_id == "d"    # bottom-right
+
+
+# ══════════════════════════════════════════════
 #  Main
 # ══════════════════════════════════════════════
 
@@ -420,6 +456,11 @@ def main():
     run_test("borders_active_focused", test_borders_active_focused)
     run_test("borders_active_none", test_borders_active_none)
     run_test("borders_active_nested", test_borders_active_nested)
+
+    print("\n── Hit test ──")
+    run_test("hit_test_single_pane", test_hit_test_single_pane)
+    run_test("hit_test_vertical_split", test_hit_test_vertical_split)
+    run_test("hit_test_nested", test_hit_test_nested)
 
     passed = sum(1 for _, ok, _ in results if ok)
     failed = sum(1 for _, ok, _ in results if not ok)

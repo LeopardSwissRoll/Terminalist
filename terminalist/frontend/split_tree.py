@@ -304,6 +304,30 @@ def _nearest_pane(node: SplitNode, source_rect: Rect, direction: Direction) -> P
     return best
 
 
+# ── Hit test (mouse click → pane) ──
+
+
+def hit_test(node: SplitNode, x: int, y: int) -> Pane | None:
+    """Find the Pane at screen coordinates (x, y).
+
+    Returns None if coordinates are on a border or outside all panes.
+    """
+    if isinstance(node, Leaf):
+        r = node.pane.rect
+        if r.x <= x < r.x + r.w and r.y <= y < r.y + r.h:
+            return node.pane
+        return None
+
+    if isinstance(node, Split):
+        # Try both children — coordinates will match at most one
+        result = hit_test(node.first, x, y)
+        if result:
+            return result
+        return hit_test(node.second, x, y)
+
+    return None
+
+
 # ── Border collection ──
 
 
