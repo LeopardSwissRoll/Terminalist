@@ -104,8 +104,8 @@ class App:
         # Create initial shell pane
         pane = self._create_pane("powershell")
         self._root = Leaf(pane)
-        self._focused = pane
-        pane.focus()
+        self._focused = None  # _set_focus will set it
+        self._set_focus(pane)
         layout(self._root, Rect(0, 0, cols, rows))
         self._compositor.full_redraw()
 
@@ -222,6 +222,23 @@ class App:
         log("app", f"Created pane {pane_id} ({provider}) session={session.session_id}")
         return pane
 
+    # ── Focus management ──
+
+    def _set_focus(self, pane: Pane) -> None:
+        """Single entry point for all focus changes.
+
+        Ensures blur()/focus() contract (enter_manual/exit_manual) is
+        always honored. Marks compositor dirty for border highlight update.
+        """
+        if self._focused is pane:
+            return
+        if self._focused:
+            self._focused.blur()
+        self._focused = pane
+        pane.focus()
+        self._compositor.mark_dirty()
+        log("focus", f"Focus → {pane.pane_id}")
+
     # ── Prefix action dispatch ──
 
     def _dispatch_prefix(self, action: str, input_count: int) -> None:
@@ -312,13 +329,11 @@ class App:
             return
 
         # Focus neighbor
-        self._focused.blur()
-        self._focused = neighbor or all_panes(self._root)[0]
-        self._focused.focused = True
+        new_focus = neighbor or all_panes(self._root)[0]
+        self._set_focus(new_focus)
 
         rows, cols = terminal_size()
         layout(self._root, Rect(0, 0, cols, rows))
-        self._compositor.mark_dirty()
         self._pending_redraw_at = time.monotonic() + 0.1
         log("app", f"Closed pane {old_id}, focused {self._focused.pane_id}")
 
@@ -329,11 +344,7 @@ class App:
             return
         neighbor = find_neighbor(self._root, self._focused.pane_id, direction, toward_second)
         if neighbor and neighbor != self._focused:
-            self._focused.blur()
-            self._focused = neighbor
-            self._focused.focused = True
-            self._compositor.mark_dirty()
-            log("app", f"Focus → {self._focused.pane_id}")
+            self._set_focus(neighbor)
 
     # ── New session in split ──
 
@@ -352,13 +363,10 @@ class App:
         self._root = split_pane(self._root, self._focused.pane_id, new_pane, direction)
 
         # Focus the new pane
-        self._focused.blur()
-        self._focused = new_pane
-        self._focused.focused = True
+        self._set_focus(new_pane)
 
         rows, cols = terminal_size()
         layout(self._root, Rect(0, 0, cols, rows))
-        self._compositor.mark_dirty()
         self._pending_redraw_at = time.monotonic() + 0.1
         log("app", f"New {provider} session in split: {new_pane.pane_id}")
 
