@@ -333,55 +333,41 @@ def hit_test(node: SplitNode, x: int, y: int) -> Pane | None:
 
 @dataclass
 class BorderSegment:
-    """A border line segment between two panes."""
+    """A border line segment between two panes.
+
+    Pure geometry — no active/focus state. Active highlight is
+    determined per-cell by compositor using focused pane's Rect.
+    """
     x: int
     y: int
     length: int
-    direction: Direction  # direction of the border line itself
-    active: bool = False  # True if focused pane is adjacent
+    direction: Direction
 
 
-def borders(
-    node: SplitNode, rect: Rect, focused_pane_id: str | None = None,
-) -> list[BorderSegment]:
-    """Collect all border segments for rendering.
-
-    If focused_pane_id is given, segments adjacent to the focused pane
-    are marked active=True (for highlight rendering).
-    """
+def borders(node: SplitNode, rect: Rect) -> list[BorderSegment]:
+    """Collect all border segments for rendering."""
     result: list[BorderSegment] = []
-    _borders_recursive(node, rect, result, focused_pane_id)
+    _borders_recursive(node, rect, result)
     return result
 
 
-def _borders_recursive(
-    node: SplitNode, rect: Rect, out: list[BorderSegment],
-    focused_id: str | None,
-) -> None:
+def _borders_recursive(node: SplitNode, rect: Rect, out: list[BorderSegment]) -> None:
     if isinstance(node, Leaf):
         return
 
     if isinstance(node, Split):
-        # Check if focused pane is in either child subtree
-        active = False
-        if focused_id:
-            in_first = find_leaf(node.first, focused_id) is not None
-            in_second = find_leaf(node.second, focused_id) is not None
-            # Border is active if focused pane is on either side
-            active = in_first or in_second
-
         if node.direction == Direction.VERTICAL:
             first_w, second_w = _split_sizes(rect.w, node.ratio, MIN_PANE_W)
             border_x = rect.x + first_w
-            out.append(BorderSegment(border_x, rect.y, rect.h, Direction.VERTICAL, active))
+            out.append(BorderSegment(border_x, rect.y, rect.h, Direction.VERTICAL))
             first_rect = Rect(rect.x, rect.y, first_w, rect.h)
             second_rect = Rect(border_x + 1, rect.y, second_w, rect.h)
         else:
             first_h, second_h = _split_sizes(rect.h, node.ratio, MIN_PANE_H)
             border_y = rect.y + first_h
-            out.append(BorderSegment(rect.x, border_y, rect.w, Direction.HORIZONTAL, active))
+            out.append(BorderSegment(rect.x, border_y, rect.w, Direction.HORIZONTAL))
             first_rect = Rect(rect.x, rect.y, rect.w, first_h)
             second_rect = Rect(rect.x, border_y + 1, rect.w, second_h)
 
-        _borders_recursive(node.first, first_rect, out, focused_id)
-        _borders_recursive(node.second, second_rect, out, focused_id)
+        _borders_recursive(node.first, first_rect, out)
+        _borders_recursive(node.second, second_rect, out)

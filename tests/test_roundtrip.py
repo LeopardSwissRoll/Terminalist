@@ -248,28 +248,43 @@ def test_roundtrip_all_attrs():
 
 
 def test_roundtrip_active_border():
-    """Focused pane's adjacent borders should be green + bold."""
-    from terminalist.frontend.compositor import BORDER_V_ACTIVE
+    """Per-cell border active: only cells adjacent to focused pane are green."""
+    from terminalist.frontend.compositor import BORDER_V_CHAR
 
-    a = make_pane("left", 39, 5, "LEFT")
-    b = make_pane("right", 40, 5, "RIGHT")
-    root = Split(Direction.VERTICAL, 0.5, Leaf(a), Leaf(b))
-    layout(root, Rect(0, 0, 80, 5))
-    comp, output = capture_compositor(80, 5)
+    # 3-pane: top-left (a), top-right (b), bottom-full (c)
+    # Vertical border between a and b covers only top half.
+    a = make_pane("a", 39, 5, "A")
+    b = make_pane("b", 40, 5, "B")
+    c = make_pane("c", 80, 5, "C")
+    root = Split(
+        Direction.HORIZONTAL, 0.5,
+        Split(Direction.VERTICAL, 0.5, Leaf(a), Leaf(b)),
+        Leaf(c),
+    )
+    layout(root, Rect(0, 0, 80, 11))
+    comp, output = capture_compositor(80, 11)
 
-    # Render with "left" focused
+    # Focus pane a (top-left)
     result = _verify_and_save(
-        "10_active_border", comp, root, Rect(0, 0, 80, 5), output, [a, b],
+        "10_active_border", comp, root, Rect(0, 0, 80, 11), output, [a, b, c],
         focused=a,
     )
     assert result.passed, result.summary()
 
-    # Verify border cells have active style (green + bold)
     frame = result.original_frame
-    border_char = frame[0][39]  # vertical border at x=39
-    assert border_char.data == "│", f"Expected │, got {border_char.data!r}"
-    assert border_char.fg == "green", f"Expected green fg, got {border_char.fg!r}"
-    assert border_char.bold is True, "Active border should be bold"
+    # v-border at x=39 — only y in a's row range should be active (green)
+    border_in_a_range = frame[0][39]  # y=0, adjacent to pane a
+    assert border_in_a_range.fg == "green", f"Expected green at y=0, got {border_in_a_range.fg!r}"
+
+    # h-border — cells in a's column range should be active
+    h_border_y = a.rect.h  # border row between top and bottom
+    border_in_a_col = frame[h_border_y][0]  # x=0, within a's width
+    assert border_in_a_col.fg == "green", f"Expected green at h-border x=0, got {border_in_a_col.fg!r}"
+
+    # h-border cell outside a's range (in b's columns) should be inactive
+    border_in_b_col = frame[h_border_y][a.rect.w + 1]  # past v-border, in b's area
+    assert border_in_b_col.fg == "bright_black", \
+        f"Expected bright_black at h-border x={a.rect.w + 1}, got {border_in_b_col.fg!r}"
 
 
 # ═══════════════════════════════════════════

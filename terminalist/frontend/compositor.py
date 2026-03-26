@@ -12,7 +12,7 @@ from __future__ import annotations
 from pyte.screens import Char
 
 from terminalist.core.pane import Pane, Rect
-from terminalist.debug import log
+from terminalist.debug import dump_render_snapshot, is_enabled, log
 from terminalist.frontend.screen_sync import EMPTY_CHAR
 from terminalist.frontend.split_tree import (
     BorderSegment,
@@ -32,9 +32,13 @@ BORDER_V_CHAR = Char("│", "bright_black", "default", False, False, False, Fals
 BORDER_H_CHAR = Char("─", "bright_black", "default", False, False, False, False, False, False)
 BORDER_CROSS = Char("┼", "bright_black", "default", False, False, False, False, False, False)
 
-# Active pane border: green + bold (clearly visible)
-BORDER_V_ACTIVE = Char("│", "green", "default", True, False, False, False, False, False)
-BORDER_H_ACTIVE = Char("─", "green", "default", True, False, False, False, False, False)
+# Active pane border: directional half-blocks.
+# Foreground paints the focused pane's side in green; background paints the
+# opposite side in dim gray so the inactive neighbor stays visibly gray.
+BORDER_V_ACTIVE_FIRST = Char("▌", "green", "bright_black", True, False, False, False, False, False)
+BORDER_V_ACTIVE_SECOND = Char("▐", "green", "bright_black", True, False, False, False, False, False)
+BORDER_H_ACTIVE_FIRST = Char("▀", "green", "bright_black", True, False, False, False, False, False)
+BORDER_H_ACTIVE_SECOND = Char("▄", "green", "bright_black", True, False, False, False, False, False)
 
 
 class Compositor:
@@ -97,22 +101,50 @@ class Compositor:
                         break
                     frame[fy][fx] = row[gx]
 
-        # Draw borders (active = focused pane adjacent → bright color)
-        focused_id = focused_pane.pane_id if focused_pane else None
-        border_segs = borders(root, rect, focused_id)
+        # Draw borders — per-cell Rect comparison for active highlight.
+        # Only cells directly adjacent to focused_pane's Rect are green.
+        focused_rect = focused_pane.rect if focused_pane else None
+        border_segs = borders(root, rect)  # no focused_id needed anymore
         for seg in border_segs:
             if seg.direction == Direction.VERTICAL:
-                char = BORDER_V_ACTIVE if seg.active else BORDER_V_CHAR
                 for i in range(seg.length):
                     y = seg.y + i
-                    if 0 <= y < self._height and 0 <= seg.x < self._width:
-                        frame[y][seg.x] = char
+                    if not (0 <= y < self._height and 0 <= seg.x < self._width):
+                        continue
+                    touches = (
+                        focused_rect is not None
+                        and (focused_rect.x + focused_rect.w == seg.x
+                             or focused_rect.x == seg.x + 1)
+                        and focused_rect.y <= y < focused_rect.y + focused_rect.h
+                    )
+                    if touches:
+                        # Direction: focused is left (first) or right (second)?
+                        if focused_rect.x + focused_rect.w == seg.x:
+                            char = BORDER_V_ACTIVE_FIRST
+                        else:
+                            char = BORDER_V_ACTIVE_SECOND
+                    else:
+                        char = BORDER_V_CHAR
+                    frame[y][seg.x] = char
             else:  # HORIZONTAL
-                char = BORDER_H_ACTIVE if seg.active else BORDER_H_CHAR
                 for i in range(seg.length):
                     x = seg.x + i
-                    if 0 <= x < self._width and 0 <= seg.y < self._height:
-                        frame[seg.y][x] = char
+                    if not (0 <= x < self._width and 0 <= seg.y < self._height):
+                        continue
+                    touches = (
+                        focused_rect is not None
+                        and (focused_rect.y + focused_rect.h == seg.y
+                             or focused_rect.y == seg.y + 1)
+                        and focused_rect.x <= x < focused_rect.x + focused_rect.w
+                    )
+                    if touches:
+                        if focused_rect.y + focused_rect.h == seg.y:
+                            char = BORDER_H_ACTIVE_FIRST
+                        else:
+                            char = BORDER_H_ACTIVE_SECOND
+                    else:
+                        char = BORDER_H_CHAR
+                    frame[seg.y][x] = char
 
         return frame
 
@@ -159,12 +191,26 @@ class Compositor:
                 cx, cy = focused_pane.get_cursor()
                 r = focused_pane.rect
                 self._writer.move_to(r.x + cx, r.y + cy)
+                cursor = (r.x + cx, r.y + cy)
+            else:
+                cursor = None
 
             self._writer.reset_attrs()
             self._writer.show_cursor()
+            vt100_output = self._writer.peek_buffer()
             self._writer.flush()
             self._prev_frame = curr_frame
             self._dirty = False
+
+            if is_enabled():
+                dump_render_snapshot(
+                    curr_frame,
+                    self._width,
+                    self._height,
+                    vt100_output,
+                    focused_pane_id=focused_pane.pane_id if focused_pane else None,
+                    cursor=cursor,
+                )
 
             if cells_written > 0:
                 log("render", f"Rendered {cells_written} cells ({self._width}x{self._height})")
