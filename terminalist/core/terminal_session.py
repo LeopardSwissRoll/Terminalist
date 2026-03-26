@@ -296,6 +296,9 @@ class TerminalSession:
                     except Exception as e:
                         log("pty", f"[{self.session_id}] raw_output callback error: {e}")
                 with self._lock:
+                    # Strip xterm private mode sequences that pyte misparses
+                    from terminalist.pyte_patch import filter_private_modes
+                    data = filter_private_modes(data)
                     self._stream.feed(data)
                     self._dirty_rows.update(self._screen.dirty)
                     self._screen.dirty.clear()

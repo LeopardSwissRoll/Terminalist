@@ -243,7 +243,37 @@ def test_roundtrip_all_attrs():
 
 
 # ═══════════════════════════════════════════
-#  Scenario 10: Golden snapshot
+#  Scenario 10: Active border highlight
+# ═══════════════════════════════════════════
+
+
+def test_roundtrip_active_border():
+    """Focused pane's adjacent borders should be green + bold."""
+    from terminalist.frontend.compositor import BORDER_V_ACTIVE
+
+    a = make_pane("left", 39, 5, "LEFT")
+    b = make_pane("right", 40, 5, "RIGHT")
+    root = Split(Direction.VERTICAL, 0.5, Leaf(a), Leaf(b))
+    layout(root, Rect(0, 0, 80, 5))
+    comp, output = capture_compositor(80, 5)
+
+    # Render with "left" focused
+    result = _verify_and_save(
+        "10_active_border", comp, root, Rect(0, 0, 80, 5), output, [a, b],
+        focused=a,
+    )
+    assert result.passed, result.summary()
+
+    # Verify border cells have active style (green + bold)
+    frame = result.original_frame
+    border_char = frame[0][39]  # vertical border at x=39
+    assert border_char.data == "│", f"Expected │, got {border_char.data!r}"
+    assert border_char.fg == "green", f"Expected green fg, got {border_char.fg!r}"
+    assert border_char.bold is True, "Active border should be bold"
+
+
+# ═══════════════════════════════════════════
+#  Scenario 11: Golden snapshot
 # ═══════════════════════════════════════════
 
 
@@ -315,6 +345,7 @@ def main():
     run_test("diff_render", test_roundtrip_diff_render)
     run_test("resize", test_roundtrip_resize)
     run_test("all_attrs", test_roundtrip_all_attrs)
+    run_test("active_border", test_roundtrip_active_border)
     run_test("golden_snapshot", test_roundtrip_golden_snapshot)
 
     passed = sum(1 for _, ok, _ in results if ok)

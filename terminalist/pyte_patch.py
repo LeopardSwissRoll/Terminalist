@@ -47,6 +47,18 @@ def apply() -> None:
         g.BG.update(_BRIGHT_BG)
 
 
+import re
+
+# Strip xterm private mode sequences that pyte misparses as SGR.
+# e.g. \x1b[>4;2m (progressive enhancement) → pyte reads "4" as underscore.
+_PRIVATE_MODE_RE = re.compile(r"\x1b\[>[0-9;]*m")
+
+
+def filter_private_modes(data: str) -> str:
+    """Remove xterm private mode sequences that confuse pyte's SGR parser."""
+    return _PRIVATE_MODE_RE.sub("", data)
+
+
 class PreservingScreen(pyte.HistoryScreen):
     """HistoryScreen that preserves content on vertical resize.
 

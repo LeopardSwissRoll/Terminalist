@@ -300,7 +300,7 @@ class App:
         # mark_dirty lets the next tick render after PTY output arrives.
         self._compositor.mark_dirty()
         # But also schedule a delayed full_redraw to catch PTY re-renders
-        self._pending_redraw_at = time.monotonic() + 0.1
+        self._pending_redraw_at = time.monotonic() + 0.2
         log("app", f"Split {direction.value}: {self._focused.pane_id} + {new_pane.pane_id}")
 
     # ── Close pane ──
@@ -341,7 +341,7 @@ class App:
 
         rows, cols = terminal_size()
         layout(self._root, Rect(0, 0, cols, rows))
-        self._pending_redraw_at = time.monotonic() + 0.1
+        self._pending_redraw_at = time.monotonic() + 0.2
         log("app", f"Closed pane {old_id}, focused {self._focused.pane_id}")
 
     # ── Focus navigation ──
@@ -374,7 +374,7 @@ class App:
 
         rows, cols = terminal_size()
         layout(self._root, Rect(0, 0, cols, rows))
-        self._pending_redraw_at = time.monotonic() + 0.1
+        self._pending_redraw_at = time.monotonic() + 0.2
         log("app", f"New {provider} session in split: {new_pane.pane_id}")
 
     # ── Zoom ──
@@ -399,7 +399,7 @@ class App:
         rows, cols = terminal_size()
         layout(self._root, Rect(0, 0, cols, rows))
         self._compositor.mark_dirty()
-        self._pending_redraw_at = time.monotonic() + 0.1
+        self._pending_redraw_at = time.monotonic() + 0.2
 
     # ── Cleanup ──
 

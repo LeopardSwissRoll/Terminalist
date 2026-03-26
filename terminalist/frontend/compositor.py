@@ -27,13 +27,14 @@ from terminalist.frontend.vt100_writer import VT100Writer
 
 # ── Border characters ──
 
-BORDER_V_CHAR = Char("│", "white", "default", False, False, False, False, False, False)
-BORDER_H_CHAR = Char("─", "white", "default", False, False, False, False, False, False)
-BORDER_CROSS = Char("┼", "white", "default", False, False, False, False, False, False)
+# Inactive border: dim gray
+BORDER_V_CHAR = Char("│", "bright_black", "default", False, False, False, False, False, False)
+BORDER_H_CHAR = Char("─", "bright_black", "default", False, False, False, False, False, False)
+BORDER_CROSS = Char("┼", "bright_black", "default", False, False, False, False, False, False)
 
-# Active pane border (brighter)
-BORDER_V_ACTIVE = Char("│", "bright_white", "default", True, False, False, False, False, False)
-BORDER_H_ACTIVE = Char("─", "bright_white", "default", True, False, False, False, False, False)
+# Active pane border: green + bold (clearly visible)
+BORDER_V_ACTIVE = Char("│", "green", "default", True, False, False, False, False, False)
+BORDER_H_ACTIVE = Char("─", "green", "default", True, False, False, False, False, False)
 
 
 class Compositor:

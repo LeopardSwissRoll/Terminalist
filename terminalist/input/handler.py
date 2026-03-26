@@ -93,6 +93,10 @@ def process_events(
         state.input_count += 1
         n = state.input_count
 
+        # Modifier-only keys (Shift, Ctrl, Alt alone) — skip silently
+        if ch is None and vk in MODIFIER_VKS:
+            continue
+
         # IME processed key — skip
         if vk == VK_PROCESSKEY:
             log("key", f"#{n} VK_PROCESSKEY ch={ch!r} (skip)")
