@@ -15,8 +15,9 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from terminalist.input.handler import _detect_paste, _da_filter, _handle_char
+from terminalist.input.handler import InputState, _detect_paste, _da_filter, _handle_char, process_events
 from terminalist.input.keymap_vk import VK_PROCESSKEY, MODIFIER_VKS, SPECIAL_VK
+from terminalist.input.win32 import MOUSE_WHEELED
 
 # KeyEvent = (char|None, vk, ctrl, repeat)
 
@@ -251,6 +252,56 @@ def test_handle_char_control():
     assert output == ["\x04"]
 
 
+def test_process_events_sgr_mouse_wheel_up():
+    """SGR mouse wheel should route to mouse callback, not PTY."""
+    output = []
+    mouse = []
+    state = InputState()
+    events = [
+        ("\x1b", 0x1B, 0, 1),
+        ("[", ord("["), 0, 1),
+        ("<", ord("<"), 0, 1),
+        ("6", ord("6"), 0, 1),
+        ("4", ord("4"), 0, 1),
+        (";", ord(";"), 0, 1),
+        ("1", ord("1"), 0, 1),
+        ("0", ord("0"), 0, 1),
+        (";", ord(";"), 0, 1),
+        ("5", ord("5"), 0, 1),
+        ("M", ord("M"), 0, 1),
+    ]
+    result = process_events(events, output.append, state, on_mouse_event=mouse.append)
+    assert result is None
+    assert output == [], f"SGR mouse must not reach PTY, got {output!r}"
+    assert len(mouse) == 1
+    assert mouse[0].x == 9 and mouse[0].y == 4
+    assert mouse[0].flags == MOUSE_WHEELED
+    assert mouse[0].buttons & 0x80000000, "wheel-up should keep Windows sign bit convention"
+
+
+def test_process_events_sgr_mouse_left_click():
+    """SGR left click should decode to a left-button MouseEvent."""
+    output = []
+    mouse = []
+    state = InputState()
+    events = [
+        ("\x1b", 0x1B, 0, 1),
+        ("[", ord("["), 0, 1),
+        ("<", ord("<"), 0, 1),
+        ("0", ord("0"), 0, 1),
+        (";", ord(";"), 0, 1),
+        ("7", ord("7"), 0, 1),
+        (";", ord(";"), 0, 1),
+        ("3", ord("3"), 0, 1),
+        ("M", ord("M"), 0, 1),
+    ]
+    process_events(events, output.append, state, on_mouse_event=mouse.append)
+    assert output == []
+    assert len(mouse) == 1
+    assert mouse[0].x == 6 and mouse[0].y == 2
+    assert mouse[0].buttons == 0x0001
+
+
 # ══════════════════════════════════════════════
 #  Keymap VK tests
 # ══════════════════════════════════════════════
@@ -313,6 +364,8 @@ def main():
     run_test("handle_char_escape", test_handle_char_escape)
     run_test("handle_char_printable", test_handle_char_printable)
     run_test("handle_char_control", test_handle_char_control)
+    run_test("process_events_sgr_mouse_wheel_up", test_process_events_sgr_mouse_wheel_up)
+    run_test("process_events_sgr_mouse_left_click", test_process_events_sgr_mouse_left_click)
 
     print("\n── Keymap VK ──")
     run_test("special_vk_has_arrows", test_special_vk_has_arrows)

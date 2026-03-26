@@ -181,6 +181,10 @@ class VT100Writer:
             sys.stdout.write(data)
             sys.stdout.flush()
 
+    def peek_buffer(self) -> str:
+        """Return the current buffered VT100 output without clearing it."""
+        return "".join(self._buf)
+
     def clear(self) -> None:
         """Reset internal state (for testing or full redraw)."""
         self._buf.clear()

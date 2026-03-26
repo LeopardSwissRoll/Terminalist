@@ -10,3 +10,6 @@ dependencies = [
 
 [project.scripts]
 terminalist = "terminalist.app:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

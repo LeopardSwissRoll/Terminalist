@@ -49,6 +49,7 @@ from terminalist.frontend.split_tree import (
 from terminalist.frontend.vt100_writer import VT100Writer
 from terminalist.input.handler import InputState, process_events
 from terminalist.input.win32 import (
+    MOUSE_WHEELED,
     RawConsoleInput,
     enable_vt,
     enter_alt_screen,
@@ -169,17 +170,7 @@ class App:
 
                 # Mouse events
                 for me in mice:
-                    if me.flags & 0x0004:  # MOUSE_WHEELED
-                        direction = "up" if me.buttons & 0x80000000 else "down"
-                        log("mouse", f"scroll {direction} at ({me.x},{me.y})")
-                    elif me.buttons == 0x0001 and me.flags == 0:  # LEFT_CLICK (not drag)
-                        # Click-to-focus: hit test → set focus
-                        clicked = hit_test(self._root, me.x, me.y) if self._root else None
-                        if clicked and clicked != self._focused:
-                            self._set_focus(clicked)
-                            log("mouse", f"click → focus {clicked.pane_id} at ({me.x},{me.y})")
-                        else:
-                            log("mouse", f"click at ({me.x},{me.y}) (no pane change)")
+                    self._handle_mouse_event(me)
 
                 if keys:
                     write_target = self._focused.write_raw if self._focused else lambda s: None
@@ -188,6 +179,7 @@ class App:
                         write_target,
                         self._input_state,
                         on_prefix_key=self._dispatch_prefix,
+                        on_mouse_event=self._handle_mouse_event,
                         h_in=h_in,
                     )
                     if result == "exit":
@@ -228,6 +220,21 @@ class App:
 
         log("app", f"Created pane {pane_id} ({provider}) session={session.session_id}")
         return pane
+
+    def _handle_mouse_event(self, me) -> None:
+        """Route both Win32 MouseEvent and synthetic SGR mouse events."""
+        if me.flags & MOUSE_WHEELED:
+            direction = "up" if me.buttons & 0x80000000 else "down"
+            log("mouse", f"scroll {direction} at ({me.x},{me.y})")
+            return
+
+        if me.buttons == 0x0001 and me.flags == 0:
+            clicked = hit_test(self._root, me.x, me.y) if self._root else None
+            if clicked and clicked != self._focused:
+                self._set_focus(clicked)
+                log("mouse", f"click → focus {clicked.pane_id} at ({me.x},{me.y})")
+            else:
+                log("mouse", f"click at ({me.x},{me.y}) (no pane change)")
 
     # ── Focus management ──
 

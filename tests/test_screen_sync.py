@@ -1,4 +1,9 @@
-"""Screen sync tests — pyte Screen → Char grid extraction."""
+"""Screen sync tests — extract_grid / extract_cursor specific behavior.
+
+Content extraction correctness (ASCII, color, bold, CJK) is covered
+by test_roundtrip.py. These tests focus on screen_sync-specific logic
+that roundtrip can't catch: cursor tracking, multiline, edge cases.
+"""
 
 from __future__ import annotations
 
@@ -6,8 +11,6 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from pyte.screens import Char
 
 from terminalist.frontend.screen_sync import extract_grid, extract_cursor, EMPTY_CHAR
 
@@ -37,42 +40,6 @@ def test_empty_screen():
     assert grid[0][0].data == " "
 
 
-def test_ascii_text():
-    s, st, lock = _make_screen()
-    st.feed("hello")
-    grid = extract_grid(s, lock)
-    chars = "".join(grid[0][i].data for i in range(5))
-    assert chars == "hello", f"Got {chars!r}"
-
-
-def test_colored_text():
-    s, st, lock = _make_screen()
-    st.feed("\x1b[31mred\x1b[0m")
-    grid = extract_grid(s, lock)
-    assert grid[0][0].data == "r"
-    assert grid[0][0].fg == "red"
-    assert grid[0][3].fg == "default"  # after reset
-
-
-def test_bold_text():
-    s, st, lock = _make_screen()
-    st.feed("\x1b[1mbold\x1b[0m")
-    grid = extract_grid(s, lock)
-    assert grid[0][0].bold is True
-    assert grid[0][4].bold is False
-
-
-def test_cjk_wide_chars():
-    """Korean chars: 2 cells each, stub cell (data='') at odd positions."""
-    s, st, lock = _make_screen()
-    st.feed("한글")
-    grid = extract_grid(s, lock)
-    assert grid[0][0].data == "한"
-    assert grid[0][1].data == ""  # stub
-    assert grid[0][2].data == "글"
-    assert grid[0][3].data == ""  # stub
-
-
 def test_cursor_position():
     s, st, lock = _make_screen()
     st.feed("abc")
@@ -82,7 +49,7 @@ def test_cursor_position():
 
 def test_cursor_after_newline():
     s, st, lock = _make_screen()
-    st.feed("abc\r\ndef")  # pyte needs CR+LF
+    st.feed("abc\r\ndef")
     x, y = extract_cursor(s)
     assert x == 3 and y == 1
 
@@ -100,7 +67,6 @@ def test_24bit_color():
     s, st, lock = _make_screen()
     st.feed("\x1b[38;2;255;128;0mcolor\x1b[0m")
     grid = extract_grid(s, lock)
-    # pyte stores 24-bit as hex string or tuple depending on version
     fg = grid[0][0].fg
     assert fg != "default", f"Expected non-default fg, got {fg!r}"
 
@@ -117,10 +83,6 @@ def main():
     print("=" * 60)
 
     run_test("empty_screen", test_empty_screen)
-    run_test("ascii_text", test_ascii_text)
-    run_test("colored_text", test_colored_text)
-    run_test("bold_text", test_bold_text)
-    run_test("cjk_wide_chars", test_cjk_wide_chars)
     run_test("cursor_position", test_cursor_position)
     run_test("cursor_after_newline", test_cursor_after_newline)
     run_test("multiline", test_multiline)

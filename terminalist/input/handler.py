@@ -13,17 +13,20 @@ Does NOT touch console APIs — that's win32.py's job.
 
 from __future__ import annotations
 
+import re
 import signal
 import sys
 import time
 import traceback
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from terminalist.debug import log
 from .keymap_vk import SPECIAL_VK, MODIFIER_VKS, VK_PROCESSKEY
 from .win32 import (
     KeyEvent,
+    MOUSE_WHEELED,
+    MouseEvent,
     has_events,
     is_shift_pressed,
     read_batch,
@@ -60,6 +63,7 @@ def process_events(
     write: Callable[[str], None],
     state: InputState,
     on_prefix_key: Callable[[str, int], None] | None = None,
+    on_mouse_event: Callable[[MouseEvent], None] | None = None,
     h_in: int | None = None,
 ) -> str | None:
     """Process a batch of key events. Returns prefix action if Ctrl+B was pressed.
@@ -89,17 +93,35 @@ def process_events(
         return None
 
     # ── Process events one by one ──
-    for ch, vk, ctrl, repeat in events:
+    i = 0
+    while i < len(events):
+        sgr_count, sgr_mouse = _try_parse_sgr_mouse(events, i)
+        if sgr_count:
+            state.input_count += sgr_count
+            n = state.input_count - sgr_count + 1
+            if on_mouse_event is not None:
+                on_mouse_event(sgr_mouse)
+            if sgr_mouse.flags & MOUSE_WHEELED:
+                direction = "up" if sgr_mouse.buttons & 0x80000000 else "down"
+                log("mouse", f"#{n} sgr wheel {direction} at ({sgr_mouse.x},{sgr_mouse.y})")
+            else:
+                log("mouse", f"#{n} sgr mouse buttons=0x{sgr_mouse.buttons:08X} at ({sgr_mouse.x},{sgr_mouse.y})")
+            i += sgr_count
+            continue
+
+        ch, vk, ctrl, repeat = events[i]
         state.input_count += 1
         n = state.input_count
 
         # Modifier-only keys (Shift, Ctrl, Alt alone) — skip silently
         if ch is None and vk in MODIFIER_VKS:
+            i += 1
             continue
 
         # IME processed key — skip
         if vk == VK_PROCESSKEY:
             log("key", f"#{n} VK_PROCESSKEY ch={ch!r} (skip)")
+            i += 1
             continue
 
         # IME confirmed (vk=0x0000) — DA filter + Korean
@@ -113,12 +135,14 @@ def process_events(
                 state.da_buf = None
             else:
                 state.da_buf = result
+            i += 1
             continue
 
         # Ctrl+C → forward to PTY
         if ch == "\x03":
             write("\x03")
             log("key", f"#{n} Ctrl+C → PTY")
+            i += 1
             continue
 
         # Ctrl+B → prefix key
@@ -132,22 +156,86 @@ def process_events(
                 # Legacy mode (interactive.py)
                 if _handle_prefix(h_in, write, n):
                     return "exit"
+            i += 1
             continue
 
         # Special keys (arrows, F-keys, etc.)
         if ch is None and vk in SPECIAL_VK:
             write(SPECIAL_VK[vk])
             log("key", f"#{n} special: vk=0x{vk:04X}")
+            i += 1
             continue
 
         # Regular character
         if ch:
             _handle_char(ch, write, n)
+            i += 1
             continue
 
         log("key", f"#{n} unhandled: ch={ch!r} vk=0x{vk:04X}")
+        i += 1
 
     return None
+
+
+_SGR_MOUSE_RE = re.compile(r"\x1b\[<(?P<cb>\d+);(?P<x>\d+);(?P<y>\d+)(?P<final>[Mm])$")
+_SGR_MOUSE_PREFIX_RE = re.compile(r"\x1b\[<[\d;]*[Mm]?$")
+
+
+def _try_parse_sgr_mouse(events: list[KeyEvent], start: int) -> tuple[int, MouseEvent | None]:
+    """Parse xterm SGR mouse escape from a run of KEY_EVENT chars.
+
+    Returns (consumed_event_count, MouseEvent). If no SGR mouse sequence starts
+    at `start`, returns (0, None).
+    """
+    if start + 2 >= len(events):
+        return 0, None
+    if events[start][0] != "\x1b" or events[start + 1][0] != "[" or events[start + 2][0] != "<":
+        return 0, None
+
+    seq = "\x1b[<"
+    i = start + 3
+    while i < len(events):
+        ch = events[i][0]
+        if ch is None:
+            return 0, None
+        seq += ch
+        match = _SGR_MOUSE_RE.fullmatch(seq)
+        if match:
+            return i - start + 1, _decode_sgr_mouse(match)
+        if not _SGR_MOUSE_PREFIX_RE.fullmatch(seq):
+            return 0, None
+        i += 1
+    return 0, None
+
+
+def _decode_sgr_mouse(match: re.Match[str]) -> MouseEvent:
+    """Convert SGR mouse CSI < Cb ; Cx ; Cy M/m into MouseEvent."""
+    cb = int(match.group("cb"))
+    x = max(0, int(match.group("x")) - 1)
+    y = max(0, int(match.group("y")) - 1)
+    final = match.group("final")
+
+    # Wheel events use button codes 64/65 (+ modifiers in higher bits).
+    if cb & 0x40:
+        wheel_up = (cb & 0x01) == 0
+        return MouseEvent(
+            x=x,
+            y=y,
+            buttons=0x80000000 if wheel_up else 0,
+            flags=MOUSE_WHEELED,
+        )
+
+    if final == "m":
+        return MouseEvent(x=x, y=y, buttons=0, flags=0)
+
+    button_code = cb & 0x03
+    button_map = {
+        0: 0x0001,  # left
+        1: 0x0002,  # right
+        2: 0x0004,  # middle
+    }
+    return MouseEvent(x=x, y=y, buttons=button_map.get(button_code, 0), flags=0)
 
 
 # ── Prefix key resolution ──

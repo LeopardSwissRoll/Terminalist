@@ -150,15 +150,21 @@ def enter_alt_screen() -> None:
         "\x1b[?1049h"   # alt screen
         "\x1b[H"        # cursor home
         "\x1b[2J"       # clear
-        # No SGR mouse — using ENABLE_MOUSE_INPUT (Windows API) instead.
-        # SGR + ENABLE_MOUSE_INPUT together causes duplicate/conflicting events.
+        # Enable basic xterm mouse reporting too.
+        # Some hosts translate wheel → arrow keys unless mouse mode is active.
+        "\x1b[?1000h"   # normal mouse tracking (click/wheel)
+        "\x1b[?1006h"   # SGR extended coordinates
     )
     sys.stdout.flush()
     log("app", "Entered alt screen")
 
 
 def exit_alt_screen() -> None:
-    sys.stdout.write("\x1b[?1049l")
+    sys.stdout.write(
+        "\x1b[?1006l"
+        "\x1b[?1000l"
+        "\x1b[?1049l"
+    )
     sys.stdout.flush()
     log("app", "Exited alt screen")
 

@@ -17,3 +17,5 @@ venv/
 *~
 .claude/
 tests/output/
+terminalist_render_*
+screen
