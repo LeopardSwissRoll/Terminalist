@@ -17,13 +17,12 @@ tmux의 키바인딩/UX를 기본으로 하되, Terminalist의 기능은 superse
 ## 아키텍처
 
 ```
-입력: os.read(stdin)  →  키 파싱  →  InputRouter (keymap.py 기반)
-                                        ├─ prefix 명령 → 앱 액션
-                                        └─ 나머지 → 활성 PTY에 전달
+입력: ReadConsoleInputW  →  배치 읽기 (win32.py)
+      → paste/DA/IME 처리 (handler.py)  →  prefix → 앱 액션 (keymap.py)
+                                          →  나머지 → 활성 PTY에 전달
 
 출력: PTY → PtyProcess.read()  →  pyte Screen (가상 화면)
-      → Layer 0에 복사 (screen_sync)
-      → Layer 1 (상태바/탭)
+      → screen_sync (Char 그리드 추출)
       → Compositor (diff 렌더) → VT100 시퀀스 → stdout
 ```
 
@@ -52,7 +51,7 @@ tmux의 키바인딩/UX를 기본으로 하되, Terminalist의 기능은 superse
 ## 아키텍처 원칙 (반드시 지킬 것)
 
 1. **TUI 프레임워크(Textual 등)를 사용하지 않는다** — 입력/출력 직접 제어
-2. **입력은 os.read(stdin)** — ConPTY/VSCode에서 Ctrl+B/C 동작 확인됨
+2. **입력은 ReadConsoleInputW** — IME, paste, 마우스, DA 응답 전부 처리 (win32.py)
 3. **출력은 VT100 직접 쓰기** — ESC[ 시퀀스로 커서 이동, 색상 적용, 화면 갱신
 4. **화면 관리**: Split 이진 트리 + Layer 합성 + prev_frame diff (변경 셀만 출력)
 5. **세션 내부 동작은 상속**, TES 바인딩은 런타임 조합
@@ -81,10 +80,10 @@ tmux의 키바인딩/UX를 기본으로 하되, Terminalist의 기능은 superse
 
 ```
 terminalist/
-├── app.py              메인 루프 (구현 필요)
+├── app.py              메인 루프 (multi-pane, compositor 렌더)
 ├── interactive.py      단일 세션 인터랙티브 셸 (얇은 엔트리포인트)
 ├── dualrun.py          VSCode + 외부 PowerShell 동시 실행
-├── pyte_patch.py       pyte 색 이름 Rich 호환 패치
+├── pyte_patch.py       pyte 색 패치 + PreservingScreen (resize 보존)
 ├── debug.py            --debug 로깅 (환경 감지 + 분리 로그)
 ├── keymap.py           액션 바인딩 정의 (prefix 명령, 단일 진실)
 ├── input/

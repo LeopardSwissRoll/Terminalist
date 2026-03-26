@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from terminalist.input.win32 import (
     INPUT_RECORD,
     KEY_EVENT,
+    KeyEvent,
     RawConsoleInput,
     kernel32,
     read_batch,
@@ -81,7 +82,7 @@ def test_roundtrip_ascii():
         ("b", 0x42, 0, 1),
         ("c", 0x43, 0, 1),
     ])
-    events = read_batch(h_in)
+    events, _ = read_batch(h_in)
     chars = [ch for ch, vk, ctrl, repeat in events if ch]
     assert chars == ["a", "b", "c"], f"Expected ['a','b','c'], got {chars}"
 
@@ -93,7 +94,7 @@ def test_roundtrip_korean():
         ("한", 0x0000, 0, 1),
         ("글", 0x0000, 0, 1),
     ])
-    events = read_batch(h_in)
+    events, _ = read_batch(h_in)
     chars = [ch for ch, vk, ctrl, repeat in events if ch]
     assert chars == ["한", "글"], f"Expected ['한','글'], got {chars}"
 
@@ -104,7 +105,7 @@ def test_roundtrip_special_key():
     _write_events(h_in, [
         (None, 0x26, 0, 1),  # VK_UP
     ])
-    events = read_batch(h_in)
+    events, _ = read_batch(h_in)
     assert len(events) == 1
     ch, vk, ctrl, repeat = events[0]
     assert ch is None, f"Expected None, got {ch!r}"
@@ -117,7 +118,7 @@ def test_roundtrip_vk_processkey():
     _write_events(h_in, [
         (None, VK_PROCESSKEY, 0, 1),
     ])
-    events = read_batch(h_in)
+    events, _ = read_batch(h_in)
     assert len(events) == 1
     ch, vk, ctrl, repeat = events[0]
     assert vk == VK_PROCESSKEY
@@ -128,7 +129,7 @@ def test_roundtrip_da_sequence():
     _flush_input(h_in)
     da = "\x1b[?61;6;7c"
     _write_events(h_in, [(c, 0x0000, 0, 1) for c in da])
-    events = read_batch(h_in)
+    events, _ = read_batch(h_in)
     chars = [ch for ch, vk, ctrl, repeat in events if ch]
     assert "".join(chars) == da, f"DA roundtrip failed: {''.join(chars)!r}"
 
@@ -141,7 +142,7 @@ def test_roundtrip_mixed_ime_sequence():
         (None, VK_PROCESSKEY, 0, 1),   # IME composing 'k'
         ("가", 0x0000, 0, 1),           # IME confirmed
     ])
-    events = read_batch(h_in)
+    events, _ = read_batch(h_in)
     assert len(events) == 3
     assert events[0][1] == VK_PROCESSKEY
     assert events[1][1] == VK_PROCESSKEY
@@ -155,7 +156,7 @@ def test_roundtrip_ctrl_state():
     _write_events(h_in, [
         ("\r", 0x0D, SHIFT_PRESSED, 1),
     ])
-    events = read_batch(h_in)
+    events, _ = read_batch(h_in)
     assert len(events) == 1
     ch, vk, ctrl, repeat = events[0]
     assert ch == "\r"
@@ -168,7 +169,7 @@ def test_roundtrip_repeat_count():
     _write_events(h_in, [
         ("x", 0x58, 0, 5),  # 'x' with repeat=5
     ])
-    events = read_batch(h_in)
+    events, _ = read_batch(h_in)
     assert len(events) == 1
     ch, vk, ctrl, repeat = events[0]
     assert ch == "x"
@@ -178,7 +179,7 @@ def test_roundtrip_repeat_count():
 def test_batch_empty_after_flush():
     """After flush, read_batch should return empty."""
     _flush_input(h_in)
-    events = read_batch(h_in)
+    events, _ = read_batch(h_in)
     assert events == [], f"Expected [], got {events}"
 
 

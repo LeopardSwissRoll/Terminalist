@@ -105,7 +105,7 @@ class App:
         pane = self._create_pane("powershell")
         self._root = Leaf(pane)
         self._focused = pane
-        pane.focused = True
+        pane.focus()
         layout(self._root, Rect(0, 0, cols, rows))
         self._compositor.full_redraw()
 
@@ -312,7 +312,7 @@ class App:
             return
 
         # Focus neighbor
-        self._focused.focused = False
+        self._focused.blur()
         self._focused = neighbor or all_panes(self._root)[0]
         self._focused.focused = True
 
@@ -329,7 +329,7 @@ class App:
             return
         neighbor = find_neighbor(self._root, self._focused.pane_id, direction, toward_second)
         if neighbor and neighbor != self._focused:
-            self._focused.focused = False
+            self._focused.blur()
             self._focused = neighbor
             self._focused.focused = True
             self._compositor.mark_dirty()
@@ -352,7 +352,7 @@ class App:
         self._root = split_pane(self._root, self._focused.pane_id, new_pane, direction)
 
         # Focus the new pane
-        self._focused.focused = False
+        self._focused.blur()
         self._focused = new_pane
         self._focused.focused = True
 
