@@ -130,14 +130,22 @@ class Compositor:
                     )
                     frame[seg.y][x] = BORDER_H_ACTIVE if touches else BORDER_H_CHAR
 
-        # Intersections: every (v.x, h.y) pair → ┼
-        v_xs = [seg.x for seg in border_segs if seg.direction == Direction.VERTICAL]
-        h_ys = [seg.y for seg in border_segs if seg.direction == Direction.HORIZONTAL]
-        for x in v_xs:
-            for y in h_ys:
-                if 0 <= x < self._width and 0 <= y < self._height:
-                    active = frame[y][x].fg == "green"  # inherit from underlying border
-                    frame[y][x] = BORDER_CROSS_ACTIVE if active else BORDER_CROSS_CHAR
+        # Intersections: ┼ where a V-segment's x falls within an H-segment's
+        # x-range AND the H-segment's y falls within the V-segment's y-range.
+        v_segs = [s for s in border_segs if s.direction == Direction.VERTICAL]
+        h_segs = [s for s in border_segs if s.direction == Direction.HORIZONTAL]
+        for v in v_segs:
+            for h in h_segs:
+                # v.x must be within h's x-range (strict: h.x <= v.x < h.x+len)
+                # h.y must be within or at v's boundary (v.y <= h.y <= v.y+len)
+                # The <= on v_end handles split V-borders: top half ends at y=13,
+                # h-border at y=14, bottom half starts at y=15. y=14 == v_end.
+                if (h.x <= v.x < h.x + h.length
+                        and v.y <= h.y <= v.y + v.length):
+                    x, y = v.x, h.y
+                    if 0 <= x < self._width and 0 <= y < self._height:
+                        active = frame[y][x].fg == "green"
+                        frame[y][x] = BORDER_CROSS_ACTIVE if active else BORDER_CROSS_CHAR
 
         return frame
 
