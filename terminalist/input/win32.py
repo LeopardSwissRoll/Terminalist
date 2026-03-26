@@ -105,9 +105,25 @@ def _decode_flags(value: int, table: dict[int, str]) -> str:
     return f"0x{value:04x} ({' | '.join(names)})" if names else f"0x{value:04x}"
 
 
-# ── KeyEvent tuple type ──
-# (char_or_none, vk, ctrl_key_state, repeat_count)
-KeyEvent = tuple[str | None, int, int, int]
+# ── Event types (tagged for type-safe dispatch) ──
+
+from typing import NamedTuple
+
+
+class KeyEvent(NamedTuple):
+    """KEY_DOWN event from ReadConsoleInputW."""
+    char: str | None  # None for special keys (arrows, F-keys)
+    vk: int           # Virtual key code
+    ctrl: int         # dwControlKeyState
+    repeat: int       # wRepeatCount
+
+
+class MouseEvent(NamedTuple):
+    """MOUSE_EVENT from ReadConsoleInputW."""
+    x: int            # Column (0-indexed)
+    y: int            # Row (0-indexed)
+    buttons: int      # dwButtonState
+    flags: int        # dwEventFlags (MOUSE_WHEELED etc.)
 
 
 # ── Console setup ──
@@ -191,16 +207,12 @@ class RawConsoleInput:
 # ── Record reading ──
 
 
-# Mouse event tuple: (x, y, button_state, event_flags)
-MouseEvent = tuple[int, int, int, int]
-
-
 def read_one_record(h_in: int) -> KeyEvent | MouseEvent | None:
     """Read one console input record. Non-blocking per record.
 
     Returns:
-        KeyEvent (char, vk, ctrl, repeat) for KEY_DOWN
-        MouseEvent (x, y, buttons, flags) for MOUSE_EVENT — caller checks type by length
+        KeyEvent for KEY_DOWN
+        MouseEvent for MOUSE_EVENT
         None for other events (KEY_UP, focus, etc.)
     """
     record = INPUT_RECORD()
@@ -209,8 +221,8 @@ def read_one_record(h_in: int) -> KeyEvent | MouseEvent | None:
 
     if record.EventType == MOUSE_EVENT:
         me = record.Event.MouseEvent
-        return (me.dwMousePosition.X, me.dwMousePosition.Y,
-                me.dwButtonState, me.dwEventFlags)
+        return MouseEvent(me.dwMousePosition.X, me.dwMousePosition.Y,
+                          me.dwButtonState, me.dwEventFlags)
 
     if record.EventType != KEY_EVENT:
         return None
@@ -221,7 +233,7 @@ def read_one_record(h_in: int) -> KeyEvent | MouseEvent | None:
     vk = ke.wVirtualKeyCode
     ctrl = ke.dwControlKeyState
     repeat = ke.wRepeatCount
-    return (ch if ch and ch != "\x00" else None, vk, ctrl, repeat)
+    return KeyEvent(ch if ch and ch != "\x00" else None, vk, ctrl, repeat)
 
 
 def read_key_blocking(h_in: int) -> KeyEvent:
@@ -233,8 +245,7 @@ def read_key_blocking(h_in: int) -> KeyEvent:
         result = read_one_record(h_in)
         if result is None:
             continue
-        # Skip MouseEvent (first element is int, not str/None)
-        if isinstance(result[0], int):
+        if isinstance(result, MouseEvent):
             continue
         return result
 
@@ -259,11 +270,10 @@ def read_batch(h_in: int, limit: int = 4096) -> tuple[list[KeyEvent], list[Mouse
         result = read_one_record(h_in)
         if result is None:
             continue
-        # Distinguish by checking if first element is int (mouse x) or str/None (key char)
-        if isinstance(result[0], int):
-            mice.append(result)  # type: ignore[arg-type]
-        else:
-            keys.append(result)  # type: ignore[arg-type]
+        if isinstance(result, MouseEvent):
+            mice.append(result)
+        elif isinstance(result, KeyEvent):
+            keys.append(result)
         if len(keys) + len(mice) >= limit:
             break
     return keys, mice

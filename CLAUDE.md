@@ -38,13 +38,14 @@ tmux의 키바인딩/UX를 기본으로 하되, Terminalist의 기능은 superse
 - `frontend/` — Split tree (layout/mutation/neighbor), screen_sync, vt100_writer, Compositor (diff 렌더)
 - `keymap.py` — 액션 바인딩 단일 진실
 - `interactive.py` — 단일 세션 인터랙티브 셸 (Claude/Codex/PowerShell 검증됨)
-- `dualrun.py` — VSCode + 외부 PowerShell 동시 테스트
+- `dualrun.py` — VSCode + 외부 PowerShell 동시 실행
 - `debug.py` — 환경 감지 + 분리 로그
-
-**구현 필요 (Phase 4+):**
 - `app.py` — 메인 루프 (multi-pane 입력→디스패치→렌더)
+- `pyte_patch.py` — pyte 색 이름 패치 + PreservingScreen (resize 시 내용 보존)
+
+**구현 필요 (Phase 5+):**
 - 상태바/탭바 (Layer 1)
-- 마우스 입력 (SGR 마우스)
+- 마우스 입력 (ENABLE_MOUSE_INPUT 기반, 클릭→포커스, 스크롤)
 - Flow (LLM 입출력 파이프라인)
 - Remote (WebSocket)
 
