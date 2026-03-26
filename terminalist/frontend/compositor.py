@@ -130,32 +130,36 @@ class Compositor:
                     )
                     frame[seg.y][x] = BORDER_H_ACTIVE if touches else BORDER_H_CHAR
 
-        # Fix intersections: where │ and ─ overlap → ┼
-        # A cell is an intersection if it has both a V and H border.
-        # Collect border cell positions by type.
-        v_cells: set[tuple[int, int]] = set()
-        h_cells: set[tuple[int, int]] = set()
+        # Fix intersections: where a V-border column meets an H-border row → ┼
+        # H-border doesn't extend into the V-border column, so set intersection
+        # won't find them. Instead: for each V-border x, check all H-border y's.
+        v_xs: set[int] = set()
+        h_ys: dict[int, tuple[int, int]] = {}  # y → (x_start, x_end)
         for seg in border_segs:
             if seg.direction == Direction.VERTICAL:
-                for i in range(seg.length):
-                    v_cells.add((seg.x, seg.y + i))
+                v_xs.add(seg.x)
             else:
-                for i in range(seg.length):
-                    h_cells.add((seg.x + i, seg.y))
-        for pos in v_cells & h_cells:
-            x, y = pos
-            if 0 <= y < self._height and 0 <= x < self._width:
-                # Active if adjacent to focused pane
-                touches = (
-                    focused_rect is not None
-                    and (focused_rect.x + focused_rect.w == x
-                         or focused_rect.x == x + 1
-                         or focused_rect.y + focused_rect.h == y
-                         or focused_rect.y == y + 1)
-                    and (focused_rect.x <= x <= focused_rect.x + focused_rect.w)
-                    and (focused_rect.y <= y <= focused_rect.y + focused_rect.h)
-                )
-                frame[y][x] = BORDER_CROSS_ACTIVE if touches else BORDER_CROSS_CHAR
+                h_ys[seg.y] = (seg.x, seg.x + seg.length)
+
+        for seg in border_segs:
+            if seg.direction == Direction.VERTICAL:
+                for y, (hx_start, hx_end) in h_ys.items():
+                    x = seg.x
+                    if not (seg.y <= y < seg.y + seg.length):
+                        continue
+                    if not (0 <= y < self._height and 0 <= x < self._width):
+                        continue
+                    # This V-border cell is on the same row as an H-border
+                    touches = (
+                        focused_rect is not None
+                        and (focused_rect.x + focused_rect.w == x
+                             or focused_rect.x == x + 1
+                             or focused_rect.y + focused_rect.h == y
+                             or focused_rect.y == y + 1)
+                        and (focused_rect.x <= x <= focused_rect.x + focused_rect.w)
+                        and (focused_rect.y <= y <= focused_rect.y + focused_rect.h)
+                    )
+                    frame[y][x] = BORDER_CROSS_ACTIVE if touches else BORDER_CROSS_CHAR
 
         return frame
 
