@@ -27,18 +27,13 @@ from terminalist.frontend.vt100_writer import VT100Writer
 
 # ── Border characters ──
 
-# Inactive border: dim gray
+# Inactive border: dim gray, thin lines
 BORDER_V_CHAR = Char("│", "bright_black", "default", False, False, False, False, False, False)
 BORDER_H_CHAR = Char("─", "bright_black", "default", False, False, False, False, False, False)
-BORDER_CROSS = Char("┼", "bright_black", "default", False, False, False, False, False, False)
 
-# Active pane border: directional half-blocks.
-# Foreground paints the focused pane's side in green; background paints the
-# opposite side in dim gray so the inactive neighbor stays visibly gray.
-BORDER_V_ACTIVE_FIRST = Char("▌", "green", "bright_black", True, False, False, False, False, False)
-BORDER_V_ACTIVE_SECOND = Char("▐", "green", "bright_black", True, False, False, False, False, False)
-BORDER_H_ACTIVE_FIRST = Char("▀", "green", "bright_black", True, False, False, False, False, False)
-BORDER_H_ACTIVE_SECOND = Char("▄", "green", "bright_black", True, False, False, False, False, False)
+# Active border: same thin lines, green color
+BORDER_V_ACTIVE = Char("│", "green", "default", False, False, False, False, False, False)
+BORDER_H_ACTIVE = Char("─", "green", "default", False, False, False, False, False, False)
 
 
 class Compositor:
@@ -101,10 +96,10 @@ class Compositor:
                         break
                     frame[fy][fx] = row[gx]
 
-        # Draw borders — per-cell Rect comparison for active highlight.
-        # Only cells directly adjacent to focused_pane's Rect are green.
+        # Draw borders — per-cell Rect comparison for active color.
+        # Same thin lines (│/─), green if adjacent to focused pane, gray otherwise.
         focused_rect = focused_pane.rect if focused_pane else None
-        border_segs = borders(root, rect)  # no focused_id needed anymore
+        border_segs = borders(root, rect)
         for seg in border_segs:
             if seg.direction == Direction.VERTICAL:
                 for i in range(seg.length):
@@ -117,15 +112,7 @@ class Compositor:
                              or focused_rect.x == seg.x + 1)
                         and focused_rect.y <= y < focused_rect.y + focused_rect.h
                     )
-                    if touches:
-                        # Direction: focused is left (first) or right (second)?
-                        if focused_rect.x + focused_rect.w == seg.x:
-                            char = BORDER_V_ACTIVE_FIRST
-                        else:
-                            char = BORDER_V_ACTIVE_SECOND
-                    else:
-                        char = BORDER_V_CHAR
-                    frame[y][seg.x] = char
+                    frame[y][seg.x] = BORDER_V_ACTIVE if touches else BORDER_V_CHAR
             else:  # HORIZONTAL
                 for i in range(seg.length):
                     x = seg.x + i
@@ -137,14 +124,7 @@ class Compositor:
                              or focused_rect.y == seg.y + 1)
                         and focused_rect.x <= x < focused_rect.x + focused_rect.w
                     )
-                    if touches:
-                        if focused_rect.y + focused_rect.h == seg.y:
-                            char = BORDER_H_ACTIVE_FIRST
-                        else:
-                            char = BORDER_H_ACTIVE_SECOND
-                    else:
-                        char = BORDER_H_CHAR
-                    frame[seg.y][x] = char
+                    frame[seg.y][x] = BORDER_H_ACTIVE if touches else BORDER_H_CHAR
 
         return frame
 
