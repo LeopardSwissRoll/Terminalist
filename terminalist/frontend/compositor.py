@@ -35,6 +35,10 @@ BORDER_H_CHAR = Char("─", "bright_black", "default", False, False, False, Fals
 BORDER_V_ACTIVE = Char("│", "green", "default", False, False, False, False, False, False)
 BORDER_H_ACTIVE = Char("─", "green", "default", False, False, False, False, False, False)
 
+# Cross chars for border intersections
+BORDER_CROSS_CHAR = Char("┼", "bright_black", "default", False, False, False, False, False, False)
+BORDER_CROSS_ACTIVE = Char("┼", "green", "default", False, False, False, False, False, False)
+
 
 class Compositor:
     """Merge pane screens into a frame, diff render to terminal."""
@@ -125,6 +129,33 @@ class Compositor:
                         and focused_rect.x <= x < focused_rect.x + focused_rect.w
                     )
                     frame[seg.y][x] = BORDER_H_ACTIVE if touches else BORDER_H_CHAR
+
+        # Fix intersections: where │ and ─ overlap → ┼
+        # A cell is an intersection if it has both a V and H border.
+        # Collect border cell positions by type.
+        v_cells: set[tuple[int, int]] = set()
+        h_cells: set[tuple[int, int]] = set()
+        for seg in border_segs:
+            if seg.direction == Direction.VERTICAL:
+                for i in range(seg.length):
+                    v_cells.add((seg.x, seg.y + i))
+            else:
+                for i in range(seg.length):
+                    h_cells.add((seg.x + i, seg.y))
+        for pos in v_cells & h_cells:
+            x, y = pos
+            if 0 <= y < self._height and 0 <= x < self._width:
+                # Active if adjacent to focused pane
+                touches = (
+                    focused_rect is not None
+                    and (focused_rect.x + focused_rect.w == x
+                         or focused_rect.x == x + 1
+                         or focused_rect.y + focused_rect.h == y
+                         or focused_rect.y == y + 1)
+                    and (focused_rect.x <= x <= focused_rect.x + focused_rect.w)
+                    and (focused_rect.y <= y <= focused_rect.y + focused_rect.h)
+                )
+                frame[y][x] = BORDER_CROSS_ACTIVE if touches else BORDER_CROSS_CHAR
 
         return frame
 

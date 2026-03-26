@@ -17,6 +17,7 @@ Environment detection:
 
 from __future__ import annotations
 
+import html
 import locale
 import logging
 import os
@@ -24,11 +25,15 @@ import platform
 import sys
 from pathlib import Path
 from shutil import get_terminal_size
+from typing import TYPE_CHECKING
 
 try:
     import ctypes
 except Exception:  # pragma: no cover
     ctypes = None
+
+if TYPE_CHECKING:
+    from pyte.screens import Char
 
 _logger: logging.Logger | None = None
 _env_tag: str = "unknown"
@@ -203,3 +208,207 @@ def log_screen_snapshot(
     start = max(0, len(lines) - tail)
     for index, line in enumerate(lines[start:], start=start):
         log("screen", f"[{session_id}] {index:03}: {line!r}")
+
+
+def _artifact_path(name: str, suffix: str) -> Path:
+    return Path(f"terminalist_{name}_{_env_tag}{suffix}")
+
+
+def _color_to_css(color: str, *, background: bool = False) -> str:
+    """Translate pyte color names/values to CSS."""
+    named = {
+        "default": "transparent" if background else "inherit",
+        "black": "#000000",
+        "red": "#cd3131",
+        "green": "#0dbc79",
+        "yellow": "#e5e510",
+        "blue": "#2472c8",
+        "magenta": "#bc3fbc",
+        "cyan": "#11a8cd",
+        "white": "#e5e5e5",
+        "bright_black": "#666666",
+        "bright_red": "#f14c4c",
+        "bright_green": "#23d18b",
+        "bright_yellow": "#f5f543",
+        "bright_blue": "#3b8eea",
+        "bright_magenta": "#d670d6",
+        "bright_cyan": "#29b8db",
+        "bright_white": "#ffffff",
+    }
+    if color in named:
+        return named[color]
+    hex_color = color.lstrip("#")
+    if len(hex_color) == 6:
+        try:
+            int(hex_color, 16)
+            return f"#{hex_color}"
+        except ValueError:
+            pass
+    return "transparent" if background else "inherit"
+
+
+def _format_frame_simple(frame: list[list[Char]], width: int, height: int) -> str:
+    lines: list[str] = []
+    for y in range(min(height, len(frame))):
+        row_chars: list[str] = []
+        for x in range(min(width, len(frame[y]))):
+            ch = frame[y][x]
+            if ch.data == "":
+                continue
+            row_chars.append(ch.data)
+        lines.append("".join(row_chars))
+    return "\n".join(lines)
+
+
+def _format_frame_detail(frame: list[list[Char]], width: int, height: int) -> str:
+    lines: list[str] = []
+    for y in range(min(height, len(frame))):
+        data_parts: list[str] = []
+        attr_parts: list[str] = []
+        for x in range(min(width, len(frame[y]))):
+            ch = frame[y][x]
+            data_parts.append(ch.data if ch.data else "_")
+            attr_parts.append(
+                f"[{x:03d}] fg={ch.fg} bg={ch.bg} "
+                f"b={'1' if ch.bold else '0'} i={'1' if ch.italics else '0'} "
+                f"u={'1' if ch.underscore else '0'} r={'1' if ch.reverse else '0'} "
+                f"s={'1' if ch.strikethrough else '0'} blink={'1' if ch.blink else '0'}"
+            )
+        lines.append(f"Row {y:03d}: {''.join(data_parts)}")
+        lines.extend(f"  {part}" for part in attr_parts)
+    return "\n".join(lines)
+
+
+def _format_frame_html(
+    frame: list[list[Char]],
+    width: int,
+    height: int,
+    *,
+    focused_pane_id: str | None,
+    cursor: tuple[int, int] | None,
+) -> str:
+    rows: list[str] = []
+    for y in range(min(height, len(frame))):
+        cells: list[str] = []
+        for x in range(min(width, len(frame[y]))):
+            ch = frame[y][x]
+            data = ch.data if ch.data else " "
+            styles = [
+                f"color:{_color_to_css(ch.fg)}",
+                f"background:{_color_to_css(ch.bg, background=True)}",
+                "font-weight:700" if ch.bold else "font-weight:400",
+                "font-style:italic" if ch.italics else "font-style:normal",
+                "text-decoration: underline" if ch.underscore else "text-decoration:none",
+            ]
+            title = (
+                f"x={x} y={y} data={data!r} fg={ch.fg} bg={ch.bg} "
+                f"bold={ch.bold} italics={ch.italics} underscore={ch.underscore} "
+                f"reverse={ch.reverse} strike={ch.strikethrough} blink={ch.blink}"
+            )
+            classes = "cell"
+            if cursor == (x, y):
+                classes += " cursor"
+            cells.append(
+                f'<span class="{classes}" style="{";".join(styles)}" '
+                f'title="{html.escape(title)}">{html.escape(data)}</span>'
+            )
+        rows.append(f'<div class="row"><span class="rowno">{y:03d}</span>{"".join(cells)}</div>')
+
+    meta = [
+        f"env={_env_tag}",
+        f"size={width}x{height}",
+        f"focused={focused_pane_id or '-'}",
+        f"cursor={cursor if cursor is not None else '-'}",
+    ]
+    return f"""<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Terminalist Render Snapshot</title>
+<style>
+body {{
+  margin: 0;
+  padding: 16px;
+  background: #111;
+  color: #ddd;
+  font: 14px/1 Consolas, "Cascadia Mono", monospace;
+}}
+.meta {{
+  margin-bottom: 12px;
+  white-space: pre-wrap;
+  line-height: 1.4;
+}}
+.row {{
+  white-space: nowrap;
+  height: 1.1em;
+}}
+.rowno {{
+  display: inline-block;
+  width: 3.5em;
+  color: #666;
+}}
+.cell {{
+  display: inline-block;
+  width: 1ch;
+  text-align: center;
+}}
+.cursor {{
+  outline: 1px solid #ffcc00;
+  outline-offset: -1px;
+}}
+</style>
+<div class="meta">{html.escape(" | ".join(meta))}</div>
+{''.join(rows)}
+</html>
+"""
+
+
+def dump_render_snapshot(
+    frame: list[list[Char]],
+    width: int,
+    height: int,
+    vt100_output: str,
+    *,
+    focused_pane_id: str | None = None,
+    cursor: tuple[int, int] | None = None,
+) -> None:
+    """Write the latest composed frame + emitted VT100 to debug artifacts.
+
+    Files are overwritten on each render so they always represent the latest
+    compositor state for the current environment.
+    """
+    if _logger is None:
+        return
+    _artifact_path("render_frame", ".txt").write_text(
+        _format_frame_simple(frame, width, height),
+        encoding="utf-8",
+    )
+    _artifact_path("render_detail", ".txt").write_text(
+        _format_frame_detail(frame, width, height),
+        encoding="utf-8",
+    )
+    _artifact_path("render_preview", ".html").write_text(
+        _format_frame_html(
+            frame,
+            width,
+            height,
+            focused_pane_id=focused_pane_id,
+            cursor=cursor,
+        ),
+        encoding="utf-8",
+    )
+    _artifact_path("render_vt100", ".txt").write_text(
+        vt100_output,
+        encoding="utf-8",
+    )
+    _artifact_path("render_vt100_repr", ".txt").write_text(
+        repr(vt100_output),
+        encoding="utf-8",
+    )
+    log(
+        "render",
+        "Artifacts updated: "
+        f"{_artifact_path('render_frame', '.txt').name}, "
+        f"{_artifact_path('render_detail', '.txt').name}, "
+        f"{_artifact_path('render_preview', '.html').name}, "
+        f"{_artifact_path('render_vt100_repr', '.txt').name}",
+    )
