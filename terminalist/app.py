@@ -149,7 +149,7 @@ class App:
             panes = all_panes(self._root)
             if not panes:
                 break
-            if not any(p.session._backend.is_alive() for p in panes):
+            if not any(p.session.is_alive() for p in panes):
                 break
 
             # ── Resize check ──
@@ -217,7 +217,7 @@ class App:
         session.add_dirty_listener(self._compositor.mark_dirty)
 
         # Track bracketed paste from PTY output
-        session._on_raw_output.append(self._input_state.track_bracketed_paste)
+        session.add_raw_output_listener(self._input_state.track_bracketed_paste)
 
         log("app", f"Created pane {pane_id} ({provider}) session={session.session_id}")
         return pane

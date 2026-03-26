@@ -54,7 +54,7 @@ def main() -> None:
         except Exception:
             pass
 
-    session._on_raw_output.append(on_raw_output)
+    session.add_raw_output_listener(on_raw_output)
     session.spawn()
     log("app", f"Session spawned pid={session._backend.pid}")
 

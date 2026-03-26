@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
+
+# ── Exclude standalone-only test files from pytest collection ──
+collect_ignore = ["test_io.py", "test_handler_integration.py"]
 from unittest.mock import MagicMock
 
 import pyte
@@ -53,6 +56,33 @@ class FakeSession:
     def resize(self, cols: int, rows: int) -> None:
         with self._lock:
             self._screen.resize(rows, cols)
+
+    def is_alive(self) -> bool:
+        return True
+
+    def get_cursor_position(self) -> tuple[int, int]:
+        return (self._screen.cursor.x, self._screen.cursor.y)
+
+    def get_screen_snapshot(self) -> tuple[list, int, int, int, int]:
+        from pyte.screens import Char as _Char
+        EMPTY = _Char(" ", "default", "default", False, False, False, False, False, False)
+        with self._lock:
+            rows = self._screen.lines
+            cols = self._screen.columns
+            grid = []
+            for y in range(rows):
+                row = []
+                buf_row = self._screen.buffer[y]
+                for x in range(cols):
+                    try:
+                        row.append(buf_row[x])
+                    except (IndexError, KeyError):
+                        row.append(EMPTY)
+                grid.append(row)
+            return grid, self._screen.cursor.x, self._screen.cursor.y, cols, rows
+
+    def add_raw_output_listener(self, cb) -> None:
+        pass
 
     def enter_manual(self) -> None:
         pass

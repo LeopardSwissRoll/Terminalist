@@ -13,7 +13,7 @@ from pyte.screens import Char
 
 from terminalist.core.pane import Pane, Rect
 from terminalist.debug import log
-from terminalist.frontend.screen_sync import EMPTY_CHAR, extract_cursor, extract_grid, extract_grid_and_cursor
+from terminalist.frontend.screen_sync import EMPTY_CHAR
 from terminalist.frontend.split_tree import (
     BorderSegment,
     Direction,
@@ -81,7 +81,7 @@ class Compositor:
         # so we clip to min(grid_size, rect_size) to prevent leaking.
         for pane in all_panes(root):
             r = pane.rect
-            grid = extract_grid(pane.session._screen, pane.session._lock)
+            grid, _, _, _, _ = pane.session.get_screen_snapshot()
 
             max_rows = min(len(grid), r.h)
             for gy in range(max_rows):
@@ -154,7 +154,7 @@ class Compositor:
 
             # Position cursor at focused pane
             if focused_pane:
-                cx, cy = extract_cursor(focused_pane.session._screen)
+                cx, cy = focused_pane.get_cursor()
                 r = focused_pane.rect
                 self._writer.move_to(r.x + cx, r.y + cy)
 

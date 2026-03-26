@@ -169,6 +169,44 @@ class TerminalSession:
                 event.data.get("cols", 120), event.data.get("rows", 40)
             )
 
+    # ── Public API (avoid private attribute access from outside) ──
+
+    def is_alive(self) -> bool:
+        """Check if PTY process is still running."""
+        return self._backend.is_alive()
+
+    def add_raw_output_listener(self, cb: Callable[[str], None]) -> None:
+        """Register callback for raw PTY output (before pyte feed)."""
+        self._on_raw_output.append(cb)
+
+    def get_cursor_position(self) -> tuple[int, int]:
+        """Return (cursor_x, cursor_y). Lightweight — no grid extraction."""
+        return (self._screen.cursor.x, self._screen.cursor.y)
+
+    def get_screen_snapshot(self) -> tuple[list, int, int, int, int]:
+        """Return (grid, cursor_x, cursor_y, cols, rows) atomically under lock.
+
+        Grid is list[list[pyte.Char]]. No frontend imports — core-owned.
+        """
+        from pyte.screens import Char
+        EMPTY = Char(" ", "default", "default", False, False, False, False, False, False)
+        with self._lock:
+            rows = self._screen.lines
+            cols = self._screen.columns
+            grid = []
+            for y in range(rows):
+                row = []
+                buf_row = self._screen.buffer[y]
+                for x in range(cols):
+                    try:
+                        row.append(buf_row[x])
+                    except (IndexError, KeyError):
+                        row.append(EMPTY)
+                grid.append(row)
+            cx = self._screen.cursor.x
+            cy = self._screen.cursor.y
+            return grid, cx, cy, cols, rows
+
     # ── PTY I/O (via backend) ──
 
     def write_raw(self, data: str) -> None:
