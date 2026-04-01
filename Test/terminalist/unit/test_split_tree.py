@@ -5,17 +5,17 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from terminalist.core.pane import Pane, Rect
 from terminalist.frontend.split_tree import (
-    Direction, Leaf, Split, SplitNode, BorderSegment,
-    layout, all_panes, find_leaf, can_split, hit_test,
-    split_pane, remove_pane, find_neighbor, borders,
+    Direction, Leaf, Split, SplitNode,
+    compute_content_rects, layout_frames, layout, all_panes, find_leaf, can_split, hit_test,
+    split_pane, remove_pane, find_neighbor, adjust_ratio,
     MIN_PANE_W, MIN_PANE_H,
 )
 
-from conftest import mock_pane as _mock_pane
+from Test.conftest import mock_pane as _mock_pane
 
 results: list[tuple[str, bool, str]] = []
 
@@ -110,6 +110,15 @@ def test_layout_minimum_size():
     assert b.rect.w >= 2
 
 
+def test_layout_assigns_shared_frame_rects_without_changing_content_rects():
+    a, b = _mock_pane("a"), _mock_pane("b")
+    root = Split(Direction.VERTICAL, 0.5, Leaf(a), Leaf(b))
+    layout(root, Rect(0, 0, 80, 24))
+    assert a.frame_rect.right == b.frame_rect.x
+    assert a.rect.w == 39
+    assert b.rect.w == 40
+
+
 def test_layout_undersize_vertical():
     """Terminal too narrow for split — sizes clamped to minimum, never 0 or negative."""
     a, b = _mock_pane("a"), _mock_pane("b")
@@ -194,25 +203,31 @@ def test_split_pane_nested():
 def test_remove_pane_collapses():
     a, b = _mock_pane("a"), _mock_pane("b")
     root = Split(Direction.VERTICAL, 0.5, Leaf(a), Leaf(b))
-    new_root = remove_pane(root, "a")
+    new_root, replacement = remove_pane(root, "a")
     assert isinstance(new_root, Leaf)
     assert new_root.pane.pane_id == "b"
+    assert isinstance(replacement, Leaf)
+    assert replacement.pane.pane_id == "b"
 
 
 def test_remove_last_pane():
     a = _mock_pane("a")
-    assert remove_pane(Leaf(a), "a") is None
+    new_root, replacement = remove_pane(Leaf(a), "a")
+    assert new_root is None
+    assert replacement is None
 
 
 def test_remove_from_nested():
     a, b, c = _mock_pane("a"), _mock_pane("b"), _mock_pane("c")
     root = Split(Direction.VERTICAL, 0.5, Leaf(a),
                  Split(Direction.HORIZONTAL, 0.5, Leaf(b), Leaf(c)))
-    new_root = remove_pane(root, "b")
+    new_root, replacement = remove_pane(root, "b")
     panes = all_panes(new_root)
     ids = [p.pane_id for p in panes]
     assert "b" not in ids
     assert len(panes) == 2
+    assert isinstance(replacement, Leaf)
+    assert replacement.pane.pane_id == "c"
 
 
 # ══════════════════════════════════════════════
@@ -300,65 +315,6 @@ def test_neighbor_2x2_down_from_top_left():
 
 
 # ══════════════════════════════════════════════
-#  Border collection
-# ══════════════════════════════════════════════
-
-def test_borders_single_pane():
-    a = _mock_pane("a")
-    segs = borders(Leaf(a), Rect(0, 0, 80, 24))
-    assert segs == []
-
-
-def test_borders_vertical_split():
-    a, b = _mock_pane("a"), _mock_pane("b")
-    root = Split(Direction.VERTICAL, 0.5, Leaf(a), Leaf(b))
-    segs = borders(root, Rect(0, 0, 80, 24))
-    assert len(segs) == 1
-    seg = segs[0]
-    assert seg.direction == Direction.VERTICAL
-    assert seg.length == 24
-    assert seg.x == 39  # 80 * 0.5 - 1 = 39
-
-
-def test_borders_nested():
-    a, b, c = _mock_pane("a"), _mock_pane("b"), _mock_pane("c")
-    root = Split(
-        Direction.HORIZONTAL, 0.5,
-        Leaf(a),
-        Split(Direction.VERTICAL, 0.5, Leaf(b), Leaf(c)),
-    )
-    segs = borders(root, Rect(0, 0, 80, 24))
-    assert len(segs) == 2  # 1 horizontal + 1 vertical
-
-
-def test_borders_pure_geometry():
-    """BorderSegment has no active/focus_side — pure geometry only."""
-    a, b = _mock_pane("a"), _mock_pane("b")
-    root = Split(Direction.VERTICAL, 0.5, Leaf(a), Leaf(b))
-    segs = borders(root, Rect(0, 0, 80, 24))
-    assert len(segs) == 1
-    assert not hasattr(segs[0], "active") or not hasattr(segs[0], "focus_side"), \
-        "BorderSegment should not have active/focus_side (compositor does per-cell)"
-
-
-def test_borders_nested_geometry():
-    """Nested split produces correct border positions."""
-    a, b, c = _mock_pane("a"), _mock_pane("b"), _mock_pane("c")
-    root = Split(
-        Direction.HORIZONTAL, 0.5,
-        Leaf(a),
-        Split(Direction.VERTICAL, 0.5, Leaf(b), Leaf(c)),
-    )
-    layout(root, Rect(0, 0, 80, 24))
-    segs = borders(root, Rect(0, 0, 80, 24))
-    assert len(segs) == 2
-    h_segs = [s for s in segs if s.direction == Direction.HORIZONTAL]
-    v_segs = [s for s in segs if s.direction == Direction.VERTICAL]
-    assert len(h_segs) == 1  # between a and b|c
-    assert len(v_segs) == 1  # between b and c
-
-
-# ══════════════════════════════════════════════
 #  Hit test
 # ══════════════════════════════════════════════
 
@@ -392,6 +348,45 @@ def test_hit_test_nested():
     assert hit_test(root, 79, 0).pane_id == "b"     # top-right
     assert hit_test(root, 0, 23).pane_id == "c"     # bottom-left
     assert hit_test(root, 79, 23).pane_id == "d"    # bottom-right
+
+
+# ══════════════════════════════════════════════
+#  Ratio adjustment
+# ══════════════════════════════════════════════
+
+def test_adjust_ratio_vertical_moves_nearest_matching_split():
+    a, b = _mock_pane("a"), _mock_pane("b")
+    root = Split(Direction.VERTICAL, 0.5, Leaf(a), Leaf(b))
+    layout(root, Rect(0, 0, 80, 24))
+
+    changed = adjust_ratio(root, "a", Direction.VERTICAL, 0.05)
+
+    assert changed is True
+    assert root.ratio > 0.5
+
+
+def test_adjust_ratio_horizontal_clamps_at_minimum():
+    a, b = _mock_pane("a"), _mock_pane("b")
+    root = Split(Direction.HORIZONTAL, 0.5, Leaf(a), Leaf(b))
+    layout(root, Rect(0, 0, 80, 3))
+
+    changed = adjust_ratio(root, "a", Direction.HORIZONTAL, -0.50)
+
+    assert changed is True
+    assert root.ratio >= (MIN_PANE_H + 1) / 3
+
+
+def test_adjust_ratio_uses_closest_matching_ancestor():
+    a, b, c = _mock_pane("a"), _mock_pane("b"), _mock_pane("c")
+    inner = Split(Direction.VERTICAL, 0.5, Leaf(b), Leaf(c))
+    root = Split(Direction.HORIZONTAL, 0.5, Leaf(a), inner)
+    layout(root, Rect(0, 0, 80, 24))
+
+    changed = adjust_ratio(root, "c", Direction.VERTICAL, 0.05)
+
+    assert changed is True
+    assert inner.ratio > 0.5
+    assert root.ratio == 0.5
 
 
 # ══════════════════════════════════════════════
@@ -438,17 +433,15 @@ def main():
     run_test("neighbor_2x2_left_from_top_right", test_neighbor_2x2_left_from_top_right)
     run_test("neighbor_2x2_down_from_top_left", test_neighbor_2x2_down_from_top_left)
 
-    print("\n── Borders ──")
-    run_test("borders_single_pane", test_borders_single_pane)
-    run_test("borders_vertical_split", test_borders_vertical_split)
-    run_test("borders_nested", test_borders_nested)
-    run_test("borders_pure_geometry", test_borders_pure_geometry)
-    run_test("borders_nested_geometry", test_borders_nested_geometry)
-
     print("\n── Hit test ──")
     run_test("hit_test_single_pane", test_hit_test_single_pane)
     run_test("hit_test_vertical_split", test_hit_test_vertical_split)
     run_test("hit_test_nested", test_hit_test_nested)
+
+    print("\n── Ratio adjustment ──")
+    run_test("adjust_ratio_vertical_moves_nearest_matching_split", test_adjust_ratio_vertical_moves_nearest_matching_split)
+    run_test("adjust_ratio_horizontal_clamps_at_minimum", test_adjust_ratio_horizontal_clamps_at_minimum)
+    run_test("adjust_ratio_uses_closest_matching_ancestor", test_adjust_ratio_uses_closest_matching_ancestor)
 
     passed = sum(1 for _, ok, _ in results if ok)
     failed = sum(1 for _, ok, _ in results if not ok)

@@ -3,7 +3,7 @@
 This file documents the debugging process. Not for CI — for humans
 who want to understand WHY the fix works.
 
-Run: python TestResize/test_investigation.py
+Run: python Test/TestResize/test_investigation.py
 
 Discovery order:
 1. Pure pyte resize → stale row found (delete_lines gap)
@@ -19,7 +19,7 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import pyte
 import terminalist.pyte_patch as pyte_patch

@@ -4,7 +4,7 @@ Renders split panes to the actual terminal using pyte screens
 (no PTY needed). Press any key to cycle through layouts.
 
 Usage:
-    python tests/demo_compositor.py [--debug]
+    python Test/terminalist/integration/demo_compositor.py [--debug]
 
 What to verify:
   1. Two panes side-by-side with │ border between them
@@ -25,7 +25,7 @@ import time
 import threading
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 import pyte
 from pyte.screens import Char

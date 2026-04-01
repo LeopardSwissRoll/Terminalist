@@ -9,17 +9,21 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-# ── Exclude standalone-only test files from pytest collection ──
-collect_ignore = ["test_io.py", "test_handler_integration.py"]
+# ── Exclude standalone/manual-only files from default pytest collection ──
+collect_ignore = [
+    "terminalist/integration/test_io.py",
+    "terminalist/integration/test_handler_integration.py",
+]
 from unittest.mock import MagicMock
 
 import pyte
 from pyte.screens import Char
 
 from terminalist.core.pane import Pane, Rect
+from terminalist.core.terminal_session import _viewport_rows
 from terminalist.frontend.compositor import Compositor
 from terminalist.frontend.vt100_writer import VT100Writer
-from terminalist.pyte_patch import apply as patch_pyte
+from terminalist.pyte_patch import PreservingScreen, apply as patch_pyte
 
 
 # ── pyte patch (once per process) ──
@@ -49,7 +53,7 @@ class FakeSession:
 
     def __init__(self, session_id: str, cols: int, rows: int) -> None:
         self.session_id = session_id
-        self._screen = pyte.Screen(cols, rows)
+        self._screen = PreservingScreen(cols, rows, history=100)
         self._stream = pyte.Stream(self._screen)
         self._lock = threading.Lock()
 
@@ -63,23 +67,34 @@ class FakeSession:
     def get_cursor_position(self) -> tuple[int, int]:
         return (self._screen.cursor.x, self._screen.cursor.y)
 
-    def get_screen_snapshot(self) -> tuple[list, int, int, int, int]:
+    def get_screen_snapshot(self, scroll_offset: int = 0) -> tuple[list, int, int, int, int]:
         from pyte.screens import Char as _Char
         EMPTY = _Char(" ", "default", "default", False, False, False, False, False, False)
         with self._lock:
             rows = self._screen.lines
             cols = self._screen.columns
-            grid = []
-            for y in range(rows):
-                row = []
-                buf_row = self._screen.buffer[y]
-                for x in range(cols):
-                    try:
-                        row.append(buf_row[x])
-                    except (IndexError, KeyError):
-                        row.append(EMPTY)
-                grid.append(row)
-            return grid, self._screen.cursor.x, self._screen.cursor.y, cols, rows
+            history_top = list(getattr(getattr(self._screen, "history", None), "top", ()))
+            visible_rows = [self._screen.buffer[y] for y in range(rows)]
+            viewport_rows, cx, cy = _viewport_rows(
+                history_top,
+                visible_rows,
+                rows,
+                self._screen.cursor.x,
+                self._screen.cursor.y,
+                scroll_offset,
+            )
+            grid = [
+                [
+                    viewport_rows[y][x] if x in viewport_rows[y] else EMPTY
+                    for x in range(cols)
+                ]
+                for y in range(rows)
+            ]
+            return grid, cx, cy, cols, rows
+
+    def get_max_scroll_offset(self) -> int:
+        with self._lock:
+            return len(getattr(getattr(self._screen, "history", None), "top", ()))
 
     def add_raw_output_listener(self, cb) -> None:
         pass
@@ -138,7 +153,12 @@ def feed_pane(pane: Pane, text: str) -> None:
         pane.session._stream.feed(text)
 
 
-def capture_compositor(w: int, h: int) -> tuple[Compositor, list[str]]:
+def capture_compositor(
+    w: int,
+    h: int,
+    *,
+    show_root_border: bool = False,
+) -> tuple[Compositor, list[str]]:
     """Create Compositor with captured VT100 output.
 
     Returns (compositor, output_list). Each flush() appends to output_list.
@@ -152,7 +172,7 @@ def capture_compositor(w: int, h: int) -> tuple[Compositor, list[str]]:
         output.append(data)
 
     writer.flush = patched_flush
-    comp = Compositor(w, h, writer)
+    comp = Compositor(w, h, writer, show_root_border=show_root_border)
     return comp, output
 
 

@@ -218,7 +218,7 @@ def format_mismatches(mismatches: list[CellMismatch]) -> str:
 #  Artifacts
 # ═══════════════════════════════════════════
 
-_OUTPUT_BASE = Path(__file__).parent.parent / "output"
+_OUTPUT_BASE = Path(__file__).parent / "output"
 
 
 def create_run_dir(base: Path | None = None) -> Path:

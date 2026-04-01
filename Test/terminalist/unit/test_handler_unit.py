@@ -3,8 +3,8 @@
 No Windows API needed — tests handler functions with synthetic KeyEvent tuples.
 Catches logic bugs like DA filter poisoning Korean input.
 
-Run: python tests/test_handler_unit.py
-     python -m pytest tests/test_handler_unit.py -v
+Run: python Test/terminalist/unit/test_handler_unit.py
+     python -m pytest Test/terminalist/unit/test_handler_unit.py -v
 """
 
 from __future__ import annotations
@@ -13,9 +13,16 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from terminalist.input.handler import InputState, _detect_paste, _da_filter, _handle_char, process_events
+from terminalist.input.handler import (
+    InputState,
+    _detect_paste,
+    _da_filter,
+    _handle_char,
+    _vk_to_key_name,
+    process_events,
+)
 from terminalist.input.keymap_vk import VK_PROCESSKEY, MODIFIER_VKS, SPECIAL_VK
 from terminalist.input.win32 import MOUSE_WHEELED
 
@@ -302,6 +309,14 @@ def test_process_events_sgr_mouse_left_click():
     assert mouse[0].buttons == 0x0001
 
 
+def test_vk_to_key_name_ctrl_arrow():
+    assert _vk_to_key_name(None, 0x26, 0x0008) == "ctrl+up"
+
+
+def test_vk_to_key_name_plain_arrow():
+    assert _vk_to_key_name(None, 0x27, 0) == "right"
+
+
 # ══════════════════════════════════════════════
 #  Keymap VK tests
 # ══════════════════════════════════════════════
@@ -366,6 +381,8 @@ def main():
     run_test("handle_char_control", test_handle_char_control)
     run_test("process_events_sgr_mouse_wheel_up", test_process_events_sgr_mouse_wheel_up)
     run_test("process_events_sgr_mouse_left_click", test_process_events_sgr_mouse_left_click)
+    run_test("vk_to_key_name_ctrl_arrow", test_vk_to_key_name_ctrl_arrow)
+    run_test("vk_to_key_name_plain_arrow", test_vk_to_key_name_plain_arrow)
 
     print("\n── Keymap VK ──")
     run_test("special_vk_has_arrows", test_special_vk_has_arrows)

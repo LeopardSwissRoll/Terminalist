@@ -1,7 +1,8 @@
 """Round-trip TUI tests — verify compositor VT100 output reconstructs correctly.
 
 Tests the full pipeline: pyte Screen → compositor → VT100 → fresh pyte → compare.
-Artifacts are ALWAYS generated to tests/output/{timestamp}/ for independent human review.
+Artifacts are ALWAYS generated to Test/terminalist/roundtrip/output/{timestamp}/
+for independent human review.
 
 LIMITATION: Round-trip through pyte only verifies logical correctness.
 Real terminal rendering differences (Windows Terminal, xterm.js) are not caught.
@@ -12,13 +13,13 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from terminalist.core.pane import Rect
 from terminalist.frontend.split_tree import Direction, Leaf, Split, all_panes, layout
 
-from conftest import make_pane, feed_pane, capture_compositor
-from roundtrip.harness import (
+from Test.conftest import make_pane, feed_pane, capture_compositor
+from Test.terminalist.roundtrip.harness import (
     RoundTripResult,
     compare_frames,
     cleanup_old_runs,
@@ -248,7 +249,7 @@ def test_roundtrip_all_attrs():
 
 
 def test_roundtrip_active_border():
-    """Per-cell border active: only cells adjacent to focused pane are green."""
+    """Per-cell border active: only cells adjacent to focused pane are green/bold."""
     from terminalist.frontend.compositor import BORDER_V_CHAR
 
     # 3-pane: top-left (a), top-right (b), bottom-full (c)
@@ -272,14 +273,18 @@ def test_roundtrip_active_border():
     assert result.passed, result.summary()
 
     frame = result.original_frame
-    # v-border at x=39 — only y in a's row range should be active (green)
+    # v-border at x=39 — only y in a's row range should be active
     border_in_a_range = frame[0][39]  # y=0, adjacent to pane a
-    assert border_in_a_range.fg == "green", f"Expected green at y=0, got {border_in_a_range.fg!r}"
+    assert border_in_a_range.fg == "green", \
+        f"Expected green at y=0, got {border_in_a_range.fg!r}"
+    assert border_in_a_range.bold is True
 
     # h-border — cells in a's column range should be active
     h_border_y = a.rect.h  # border row between top and bottom
     border_in_a_col = frame[h_border_y][0]  # x=0, within a's width
-    assert border_in_a_col.fg == "green", f"Expected green at h-border x=0, got {border_in_a_col.fg!r}"
+    assert border_in_a_col.fg == "green", \
+        f"Expected green at h-border x=0, got {border_in_a_col.fg!r}"
+    assert border_in_a_col.bold is True
 
     # h-border cell outside a's range (in b's columns) should be inactive
     border_in_b_col = frame[h_border_y][a.rect.w + 1]  # past v-border, in b's area
@@ -294,7 +299,7 @@ def test_roundtrip_active_border():
 
 def test_roundtrip_golden_snapshot():
     """Snapshot test — creates golden file on first run, compares on subsequent."""
-    from roundtrip.harness import format_frame_simple
+    from Test.terminalist.roundtrip.harness import format_frame_simple
 
     a = make_pane("left", 39, 3, "LEFT")
     b = make_pane("right", 40, 3, "RIGHT")

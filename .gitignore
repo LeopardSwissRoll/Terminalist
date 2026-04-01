@@ -16,6 +16,6 @@ venv/
 *.swo
 *~
 .claude/
-tests/output/
+Test/terminalist/roundtrip/output/
 terminalist_render_*
 screen

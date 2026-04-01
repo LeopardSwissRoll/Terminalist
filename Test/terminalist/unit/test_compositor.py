@@ -12,13 +12,15 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
+from pyte.screens import Char
 
 from terminalist.core.pane import Rect
 from terminalist.frontend.compositor import EMPTY_CHAR
 from terminalist.frontend.split_tree import Leaf, layout
 
-from conftest import make_pane as _make_pane, capture_compositor as _capture_compositor, feed_pane
+from Test.conftest import make_pane as _make_pane, capture_compositor as _capture_compositor, feed_pane
 
 results: list[tuple[str, bool, str]] = []
 
@@ -84,6 +86,61 @@ def test_mark_dirty():
     assert comp.needs_render()
 
 
+def test_root_border_option_draws_outer_box():
+    pane = _make_pane("a", cols=5, rows=2, text="AB")
+    root = Leaf(pane)
+    layout(root, Rect(0, 0, 5, 2))
+
+    comp, _ = _capture_compositor(5, 2, show_root_border=True)
+    frame = comp.compose(root, Rect(0, 0, 5, 2), focused_pane=pane)
+
+    assert frame[0][0].data == "┌"
+    assert frame[0][4].data == "┐"
+    assert frame[1][0].data == "└"
+    assert frame[1][4].data == "┘"
+
+
+def test_render_status_line_overlays_last_row():
+    pane = _make_pane("a", cols=5, rows=2, text="AB")
+    root = Leaf(pane)
+    layout(root, Rect(0, 0, 5, 2))
+
+    comp, _ = _capture_compositor(5, 3)
+    frame = comp.compose(root, Rect(0, 0, 5, 2))
+    status = [
+        Char("[", "white", "bright_black", False, False, False, False, False, False),
+        Char("*", "bright_white", "bright_black", True, False, False, False, False, False),
+        Char("]", "white", "bright_black", False, False, False, False, False, False),
+        Char(" ", "white", "bright_black", False, False, False, False, False, False),
+        Char(" ", "white", "bright_black", False, False, False, False, False, False),
+    ]
+
+    comp.render_status_line(status, 2, frame)
+
+    assert frame[2][0].data == "["
+    assert frame[2][1].data == "*"
+    assert frame[2][1].fg == "bright_white"
+    assert frame[2][1].bg == "bright_black"
+
+
+def test_compose_uses_scrollback_viewport():
+    pane = _make_pane("a", cols=10, rows=3)
+    for i in range(1, 7):
+        feed_pane(pane, f"L{i}\r\n")
+    assert pane.scroll_up(2) is True
+
+    root = Leaf(pane)
+    layout(root, Rect(0, 0, 10, 3))
+
+    comp, _ = _capture_compositor(10, 3)
+    frame = comp.compose(root, Rect(0, 0, 10, 3), focused_pane=pane)
+    lines = ["".join(cell.data or " " for cell in row) for row in frame]
+
+    assert lines[0].startswith("L3"), lines
+    assert lines[1].startswith("L4"), lines
+    assert lines[2].startswith("L5"), lines
+
+
 # ══════════════════════════════════════════════
 #  Main
 # ══════════════════════════════════════════════
@@ -97,6 +154,9 @@ def main():
     run_test("render_no_change", test_render_no_change)
     run_test("render_marks_not_dirty", test_render_marks_not_dirty)
     run_test("mark_dirty", test_mark_dirty)
+    run_test("root_border_option_draws_outer_box", test_root_border_option_draws_outer_box)
+    run_test("render_status_line_overlays_last_row", test_render_status_line_overlays_last_row)
+    run_test("compose_uses_scrollback_viewport", test_compose_uses_scrollback_viewport)
 
     passed = sum(1 for _, ok, _ in results if ok)
     failed = sum(1 for _, ok, _ in results if not ok)

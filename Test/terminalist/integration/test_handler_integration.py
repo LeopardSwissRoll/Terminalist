@@ -5,7 +5,7 @@ reads back via read_batch(), verifies round-trip correctness.
 
 Windows-only. Requires a real console (not piped stdin).
 
-Run: python tests/test_handler_integration.py
+Run: python Test/terminalist/integration/test_handler_integration.py
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import ctypes.wintypes as wt
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from terminalist.input.win32 import (
     INPUT_RECORD,

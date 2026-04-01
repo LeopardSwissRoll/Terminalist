@@ -33,8 +33,8 @@ Full profile (PSReadLine) 에서 100% 재현.
 
 ```bash
 # 핵심 테스트 (빠름, PTY 포함)
-python TestResize/test_unit.py
+python Test/TestResize/test_unit.py
 
 # 조사 과정 재현 (느림, 참고용)
-python TestResize/test_investigation.py
+python Test/TestResize/test_investigation.py
 ```

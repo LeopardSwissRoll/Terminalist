@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 # Add project root to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from terminalist.debug import init_debug, log
 from terminalist.pyte_patch import apply as patch_pyte

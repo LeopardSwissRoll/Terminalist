@@ -7,7 +7,7 @@ Verifies:
 4. Sparse screen (partially filled)
 5. Real PTY with PSReadLine profile (the original bug scenario)
 
-Run: python TestResize/test_unit.py
+Run: python Test/TestResize/test_unit.py
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import pyte
 import terminalist.pyte_patch as pyte_patch

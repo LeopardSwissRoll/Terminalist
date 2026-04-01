@@ -12,4 +12,4 @@ dependencies = [
 terminalist = "terminalist.app:main"
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["Test/terminalist"]
