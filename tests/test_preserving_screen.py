@@ -255,6 +255,77 @@ def test_shrink_to_minimum():
 
 
 # ═══════════════════════════════════════════
+#  Regression: materialized empty buffer keys
+# ═══════════════════════════════════════════
+
+
+def test_materialized_empty_rows():
+    """Regression: when ALL rows have buffer entries (including empty ones),
+    stock pyte.Screen.resize shifts empty rows over content rows.
+
+    Root cause: ConPTY output or get_screen_snapshot() accesses
+    screen.buffer[y] for every row, which materializes empty defaultdict
+    entries. pyte.Screen.delete_lines then shifts these empty entries
+    to overwrite content rows.
+
+    This is the h-split content disappearance bug.
+    """
+    s, st = _make_screen(40, 20)
+    for i in range(8):
+        st.feed(f"Content {i:02d}\r\n")
+    st.feed("PS prompt> ")
+
+    # Simulate buffer entry materialization (ConPTY / get_screen_snapshot)
+    for y in range(20):
+        _ = s.buffer[y]
+
+    assert len(s.buffer) == 20, "precondition: all rows materialized"
+
+    s.resize(10, 40)
+
+    lines = _all_lines(s)
+    ne = sum(1 for l in lines if l.strip())
+    assert ne > 0, (
+        f"All content lost after resize with materialized empty rows! "
+        f"This is the h-split PSReadLine bug regression."
+    )
+    assert any("PS prompt" in l for l in lines), "Prompt should remain visible"
+
+
+def test_no_stale_rows_after_shrink():
+    """After shrink, no row should contain stale data from pre-shrink positions."""
+    s, st = _make_screen(20, 10)
+    for i in range(8):
+        st.feed(f"Line {i:02d}\r\n")
+    st.feed("Line 08")
+    # cursor at y=8
+
+    s.resize(5, 20)
+
+    lines = _all_lines(s)
+    # Lines 00-03 went to history; they must NOT appear in visible area
+    for y in range(5):
+        for i in range(4):
+            assert f"Line {i:02d}" not in lines[y], \
+                f"Stale 'Line {i:02d}' at row {y}: {lines[y]!r}"
+
+
+def test_shrink_cursor_bottom_keeps_cursor_visible():
+    """Cursor at bottom of content: viewport window must include cursor row."""
+    s, st = _make_screen(20, 10)
+    for i in range(8):
+        st.feed(f"Line {i:02d}\r\n")
+    st.feed("Line 08")
+    assert s.cursor.y == 8
+
+    s.resize(5, 20)
+
+    assert s.cursor.y == 4, f"cursor.y={s.cursor.y}, expected 4"
+    line = _read_line(s, 4)
+    assert "Line 08" in line, f"Cursor row should have Line 08, got {line!r}"
+
+
+# ═══════════════════════════════════════════
 #  Main
 # ═══════════════════════════════════════════
 
@@ -283,6 +354,11 @@ def main():
     run_test("cjk_content_preserved", test_cjk_content_preserved)
     run_test("new_content_after_resize", test_new_content_after_resize)
     run_test("shrink_to_minimum", test_shrink_to_minimum)
+
+    print("\n── Regression: materialized buffer keys ──")
+    run_test("materialized_empty_rows", test_materialized_empty_rows)
+    run_test("no_stale_rows_after_shrink", test_no_stale_rows_after_shrink)
+    run_test("shrink_cursor_bottom_keeps_cursor_visible", test_shrink_cursor_bottom_keeps_cursor_visible)
 
     passed = sum(1 for _, ok, _ in results if ok)
     failed = sum(1 for _, ok, _ in results if not ok)
