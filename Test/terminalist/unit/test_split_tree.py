@@ -42,7 +42,7 @@ def test_single_leaf_layout():
     pane = _mock_pane("a")
     root = Leaf(pane)
     layout(root, Rect(0, 0, 80, 24))
-    assert pane.rect == Rect(0, 0, 80, 24)
+    assert pane.content_rect == Rect(0, 0, 80, 24)
 
 
 def test_vertical_split_layout():
@@ -51,10 +51,10 @@ def test_vertical_split_layout():
     root = Split(Direction.VERTICAL, 0.5, Leaf(a), Leaf(b))
     layout(root, Rect(0, 0, 80, 24))
     # 80 * 0.5 - 1 = 39, border at 39, second starts at 40, width = 40
-    assert a.rect.w == 39, f"a.w={a.rect.w}"
-    assert b.rect.x == 40, f"b.x={b.rect.x}"
-    assert b.rect.w == 40, f"b.w={b.rect.w}"
-    assert a.rect.w + 1 + b.rect.w == 80, "widths + border should equal total"
+    assert a.content_rect.w == 39, f"a.w={a.content_rect.w}"
+    assert b.content_rect.x == 40, f"b.x={b.content_rect.x}"
+    assert b.content_rect.w == 40, f"b.w={b.content_rect.w}"
+    assert a.content_rect.w + 1 + b.content_rect.w == 80, "widths + border should equal total"
 
 
 def test_horizontal_split_layout():
@@ -62,8 +62,8 @@ def test_horizontal_split_layout():
     a, b = _mock_pane("a"), _mock_pane("b")
     root = Split(Direction.HORIZONTAL, 0.5, Leaf(a), Leaf(b))
     layout(root, Rect(0, 0, 80, 24))
-    assert a.rect.h + 1 + b.rect.h == 24, f"a.h={a.rect.h} b.h={b.rect.h}"
-    assert b.rect.y == a.rect.h + 1
+    assert a.content_rect.h + 1 + b.content_rect.h == 24, f"a.h={a.content_rect.h} b.h={b.content_rect.h}"
+    assert b.content_rect.y == a.content_rect.h + 1
 
 
 def test_nested_split_layout():
@@ -77,8 +77,8 @@ def test_nested_split_layout():
         Split(Direction.VERTICAL, 0.5, Leaf(b), Leaf(c)),
     )
     layout(root, Rect(0, 0, 80, 24))
-    assert a.rect.h + 1 + b.rect.h == 24
-    assert b.rect.w + 1 + c.rect.w == 80
+    assert a.content_rect.h + 1 + b.content_rect.h == 24
+    assert b.content_rect.w + 1 + c.content_rect.w == 80
 
 
 def test_layout_with_offset():
@@ -86,10 +86,10 @@ def test_layout_with_offset():
     a, b = _mock_pane("a"), _mock_pane("b")
     root = Split(Direction.VERTICAL, 0.5, Leaf(a), Leaf(b))
     layout(root, Rect(10, 5, 60, 20))
-    assert a.rect.x == 10
-    assert a.rect.y == 5
-    assert b.rect.y == 5
-    assert b.rect.x == 10 + a.rect.w + 1
+    assert a.content_rect.x == 10
+    assert a.content_rect.y == 5
+    assert b.content_rect.y == 5
+    assert b.content_rect.x == 10 + a.content_rect.w + 1
 
 
 def test_layout_unequal_ratio():
@@ -97,8 +97,8 @@ def test_layout_unequal_ratio():
     a, b = _mock_pane("a"), _mock_pane("b")
     root = Split(Direction.VERTICAL, 0.7, Leaf(a), Leaf(b))
     layout(root, Rect(0, 0, 100, 24))
-    assert a.rect.w > b.rect.w, f"a.w={a.rect.w} should be > b.w={b.rect.w}"
-    assert a.rect.w + 1 + b.rect.w == 100
+    assert a.content_rect.w > b.content_rect.w, f"a.w={a.content_rect.w} should be > b.w={b.content_rect.w}"
+    assert a.content_rect.w + 1 + b.content_rect.w == 100
 
 
 def test_layout_minimum_size():
@@ -106,8 +106,8 @@ def test_layout_minimum_size():
     a, b = _mock_pane("a"), _mock_pane("b")
     root = Split(Direction.VERTICAL, 0.5, Leaf(a), Leaf(b))
     layout(root, Rect(0, 0, 5, 3))  # 5 cols: min 2 + border 1 + min 2 = 5
-    assert a.rect.w >= 2
-    assert b.rect.w >= 2
+    assert a.content_rect.w >= 2
+    assert b.content_rect.w >= 2
 
 
 def test_layout_assigns_shared_frame_rects_without_changing_content_rects():
@@ -115,8 +115,8 @@ def test_layout_assigns_shared_frame_rects_without_changing_content_rects():
     root = Split(Direction.VERTICAL, 0.5, Leaf(a), Leaf(b))
     layout(root, Rect(0, 0, 80, 24))
     assert a.frame_rect.right == b.frame_rect.x
-    assert a.rect.w == 39
-    assert b.rect.w == 40
+    assert a.content_rect.w == 39
+    assert b.content_rect.w == 40
 
 
 def test_layout_undersize_vertical():
@@ -124,8 +124,8 @@ def test_layout_undersize_vertical():
     a, b = _mock_pane("a"), _mock_pane("b")
     root = Split(Direction.VERTICAL, 0.5, Leaf(a), Leaf(b))
     layout(root, Rect(0, 0, 3, 10))  # 3 < min*2+1=5
-    assert a.rect.w >= MIN_PANE_W, f"a.w={a.rect.w} < {MIN_PANE_W}"
-    assert b.rect.w >= MIN_PANE_W, f"b.w={b.rect.w} < {MIN_PANE_W}"
+    assert a.content_rect.w >= MIN_PANE_W, f"a.w={a.content_rect.w} < {MIN_PANE_W}"
+    assert b.content_rect.w >= MIN_PANE_W, f"b.w={b.content_rect.w} < {MIN_PANE_W}"
 
 
 def test_layout_undersize_horizontal():
@@ -133,8 +133,8 @@ def test_layout_undersize_horizontal():
     a, b = _mock_pane("a"), _mock_pane("b")
     root = Split(Direction.HORIZONTAL, 0.5, Leaf(a), Leaf(b))
     layout(root, Rect(0, 0, 80, 2))  # 2 < min*2+1=3
-    assert a.rect.h >= MIN_PANE_H, f"a.h={a.rect.h} < {MIN_PANE_H}"
-    assert b.rect.h >= MIN_PANE_H, f"b.h={b.rect.h} < {MIN_PANE_H}"
+    assert a.content_rect.h >= MIN_PANE_H, f"a.h={a.content_rect.h} < {MIN_PANE_H}"
+    assert b.content_rect.h >= MIN_PANE_H, f"b.h={b.content_rect.h} < {MIN_PANE_H}"
 
 
 def test_can_split_check():

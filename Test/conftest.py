@@ -137,7 +137,8 @@ def make_pane(pane_id: str, cols: int = 20, rows: int = 5, text: str = "") -> Pa
     p = Pane.__new__(Pane)
     p.pane_id = pane_id
     p.session = session
-    p.rect = Rect(0, 0, cols, rows)
+    p.frame_rect = Rect(0, 0, cols, rows)
+    p.content_rect = Rect(0, 0, cols, rows)
     p.focused = False
     p._copy_mode = False
     p._scroll_offset = 0
@@ -155,7 +156,8 @@ def mock_pane(pane_id: str, cols: int = 80, rows: int = 24) -> Pane:
     p = Pane.__new__(Pane)
     p.pane_id = pane_id
     p.session = session
-    p.rect = Rect(0, 0, cols, rows)
+    p.frame_rect = Rect(0, 0, cols, rows)
+    p.content_rect = Rect(0, 0, cols, rows)
     p.focused = False
     p._copy_mode = False
     p._scroll_offset = 0

@@ -265,9 +265,9 @@ def write_artifacts(
     # Per-pane grids
     for pane in panes:
         grid = extract_grid(pane.session._screen, pane.session._lock)
-        text = format_frame_simple(grid, pane.rect.w, pane.rect.h)
+        text = format_frame_simple(grid, pane.content_rect.w, pane.content_rect.h)
         (scenario_dir / f"pane_{pane.pane_id}_grid.txt").write_text(
-            f"=== Pane: {pane.pane_id} ({pane.rect.w}x{pane.rect.h}) ===\n{text}\n",
+            f"=== Pane: {pane.pane_id} ({pane.content_rect.w}x{pane.content_rect.h}) ===\n{text}\n",
             encoding="utf-8",
         )
 

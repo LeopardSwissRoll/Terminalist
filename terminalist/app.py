@@ -425,7 +425,7 @@ class App:
 
         self._clear_zoom_for_mutation(window)
 
-        if not can_split(window.focused.rect, direction):
+        if not can_split(window.focused.content_rect, direction):
             log("app", "Split rejected: pane too small")
             return
 
@@ -558,9 +558,9 @@ class App:
         self._clear_zoom_for_mutation(window)
 
         direction = Direction.VERTICAL
-        if not can_split(window.focused.rect, direction):
+        if not can_split(window.focused.content_rect, direction):
             direction = Direction.HORIZONTAL
-            if not can_split(window.focused.rect, direction):
+            if not can_split(window.focused.content_rect, direction):
                 log("app", f"Cannot split for new {provider}: too small")
                 return
 

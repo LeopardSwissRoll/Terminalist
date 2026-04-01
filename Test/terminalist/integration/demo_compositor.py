@@ -58,7 +58,8 @@ def _make_pane(pane_id: str, cols: int, rows: int) -> Pane:
     p = Pane.__new__(Pane)
     p.pane_id = pane_id
     p.session = session
-    p.rect = Rect(0, 0, cols, rows)
+    p.frame_rect = Rect(0, 0, cols, rows)
+    p.content_rect = Rect(0, 0, cols, rows)
     p.focused = False
     p._copy_mode = False
     p._scroll_offset = 0
@@ -119,7 +120,7 @@ def run_demo(debug: bool = False) -> None:
         _feed(a, "English text works.\r\n")
         _feed(a, "\x1b[36m한글 테스트\x1b[0m — Korean OK?\r\n")
         _feed(a, "\x1b[1;31mBold Red\x1b[0m / \x1b[32mGreen\x1b[0m / \x1b[34mBlue\x1b[0m\r\n")
-        _feed(a, f"\r\nPane rect: {a.rect}")
+        _feed(a, f"\r\nPane rect: {a.content_rect}")
 
         _feed(b, "\x1b[35m")  # magenta
         _feed(b, "═══ RIGHT PANE ═══\r\n")
@@ -127,7 +128,7 @@ def run_demo(debug: bool = False) -> None:
         _feed(b, "This is the right side.\r\n")
         _feed(b, "混合テスト — CJK mixed.\r\n")
         _feed(b, "\x1b[7mReverse video\x1b[0m\r\n")
-        _feed(b, f"\r\nPane rect: {b.rect}")
+        _feed(b, f"\r\nPane rect: {b.content_rect}")
 
         compositor.render(root, Rect(0, 0, cols, rows), focused_pane=a)
         log("demo", "Demo 1: Vertical split rendered")
@@ -149,11 +150,11 @@ def run_demo(debug: bool = False) -> None:
 
         _feed(c, "\x1b[33m═══ TOP PANE ═══\x1b[0m\r\n")
         _feed(c, "Above the horizontal border.\r\n")
-        _feed(c, f"Rect: {c.rect}")
+        _feed(c, f"Rect: {c.content_rect}")
 
         _feed(d, "\x1b[36m═══ BOTTOM PANE ═══\x1b[0m\r\n")
         _feed(d, "Below the horizontal border.\r\n")
-        _feed(d, f"Rect: {d.rect}")
+        _feed(d, f"Rect: {d.content_rect}")
 
         compositor.render(root2, Rect(0, 0, cols, rows), focused_pane=c)
         log("demo", "Demo 2: Horizontal split rendered")
@@ -183,15 +184,15 @@ def run_demo(debug: bool = False) -> None:
         _feed(e, "\x1b[36m한글 + English + 日本語\x1b[0m\r\n")
         for i in range(1, 8):
             _feed(e, f"  Line {i}\r\n")
-        _feed(e, f"\r\nRect: {e.rect}")
+        _feed(e, f"\r\nRect: {e.content_rect}")
 
         _feed(f, "\x1b[35m═ TOP RIGHT ═\x1b[0m\r\n")
         _feed(f, "Claude output\r\n")
-        _feed(f, f"Rect: {f.rect}")
+        _feed(f, f"Rect: {f.content_rect}")
 
         _feed(g, "\x1b[32m═ BOT RIGHT ═\x1b[0m\r\n")
         _feed(g, "Shell session\r\n")
-        _feed(g, f"Rect: {g.rect}")
+        _feed(g, f"Rect: {g.content_rect}")
 
         compositor.render(root3, Rect(0, 0, cols, rows), focused_pane=e)
         log("demo", "Demo 3: Nested 3-pane rendered")

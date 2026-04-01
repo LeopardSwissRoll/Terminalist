@@ -63,19 +63,6 @@ class Pane:
 
         log("session", f"[pane:{pane_id}] created for session={session.session_id} rect={self.content_rect}")
 
-    @property
-    def rect(self) -> Rect:
-        """Backward-compatible alias for the PTY content rect."""
-        return self.content_rect
-
-    @rect.setter
-    def rect(self, value: Rect) -> None:
-        old_content = getattr(self, "content_rect", None)
-        old_frame = getattr(self, "frame_rect", None)
-        self.content_rect = value
-        if old_content is None or old_frame is None or old_frame == old_content:
-            self.frame_rect = value
-
     # ── Focus ──
 
     def focus(self) -> None:
@@ -91,10 +78,6 @@ class Pane:
             log("focus", f"[pane:{self.pane_id}] blurred")
 
     # ── Resize ──
-
-    def set_rect(self, rect: Rect) -> None:
-        """Backward-compatible geometry update for legacy callers."""
-        self.set_geometry(rect, rect)
 
     def set_geometry(self, frame_rect: Rect, content_rect: Rect) -> None:
         """Update visual frame + PTY content geometry.

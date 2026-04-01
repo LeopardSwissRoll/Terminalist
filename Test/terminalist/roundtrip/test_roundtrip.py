@@ -213,7 +213,8 @@ def test_roundtrip_resize():
     # Resize
     comp.resize(20, 8)
     pane.session.resize(20, 8)
-    pane.rect = Rect(0, 0, 20, 8)
+    pane.frame_rect = Rect(0, 0, 20, 8)
+    pane.content_rect = Rect(0, 0, 20, 8)
     layout(root, Rect(0, 0, 20, 8))
 
     # Full redraw after resize (prev_frame is invalidated)
@@ -280,16 +281,16 @@ def test_roundtrip_active_border():
     assert border_in_a_range.bold is True
 
     # h-border — cells in a's column range should be active
-    h_border_y = a.rect.h  # border row between top and bottom
+    h_border_y = a.content_rect.h  # border row between top and bottom
     border_in_a_col = frame[h_border_y][0]  # x=0, within a's width
     assert border_in_a_col.fg == "green", \
         f"Expected green at h-border x=0, got {border_in_a_col.fg!r}"
     assert border_in_a_col.bold is True
 
     # h-border cell outside a's range (in b's columns) should be inactive
-    border_in_b_col = frame[h_border_y][a.rect.w + 1]  # past v-border, in b's area
+    border_in_b_col = frame[h_border_y][a.content_rect.w + 1]  # past v-border, in b's area
     assert border_in_b_col.fg == "bright_black", \
-        f"Expected bright_black at h-border x={a.rect.w + 1}, got {border_in_b_col.fg!r}"
+        f"Expected bright_black at h-border x={a.content_rect.w + 1}, got {border_in_b_col.fg!r}"
 
 
 # ═══════════════════════════════════════════

@@ -69,7 +69,6 @@ LLM 특화 기능의 핵심.
 
 ## Nice-to-Have Cleanup
 
-- `Pane.rect` 하위호환 alias 제거 시점 결정
 - `Compositor(show_root_border=...)`를 실제 옵션으로 노출할지 결정
 - `TestPane`과 본체 사이의 canonical prototype 관계 문서화
 - `Test/terminalist/unit` 내부의 유사 테스트를 추가 정리
