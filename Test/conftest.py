@@ -56,6 +56,8 @@ class FakeSession:
         self._screen = PreservingScreen(cols, rows, history=100)
         self._stream = pyte.Stream(self._screen)
         self._lock = threading.Lock()
+        self._dirty_listeners: list = []
+        self._raw_output_listeners: list = []
 
     def resize(self, cols: int, rows: int) -> None:
         with self._lock:
@@ -97,7 +99,20 @@ class FakeSession:
             return len(getattr(getattr(self._screen, "history", None), "top", ()))
 
     def add_raw_output_listener(self, cb) -> None:
-        pass
+        self._raw_output_listeners.append(cb)
+
+    def add_dirty_listener(self, cb) -> None:
+        self._dirty_listeners.append(cb)
+
+    def remove_dirty_listener(self, cb) -> None:
+        try:
+            self._dirty_listeners.remove(cb)
+        except ValueError:
+            pass
+
+    def emit_dirty(self) -> None:
+        for cb in list(self._dirty_listeners):
+            cb()
 
     def enter_manual(self) -> None:
         pass

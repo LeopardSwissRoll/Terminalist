@@ -56,11 +56,13 @@ tmux의 키모델과 pane UX를 기본으로 삼되, LLM 세션과 마우스/자
   - `Compositor` (`mask/owner` border 렌더, diff 렌더, status line overlay)
 - `app.py`
   - multi-pane 메인 루프
+  - multi-window / tab-style 전환
   - split / focus / close / zoom
   - mouse click focus
   - wheel scrollback viewport
   - status line
   - `Ctrl+B` + `Ctrl+방향키` pane resize
+  - `Ctrl+B w/n/p/1-5` window 생성 / 전환
 - `interactive.py`
   - 단일 세션 회귀용 엔트리포인트
 - `dualrun.py`
@@ -78,7 +80,6 @@ tmux의 키모델과 pane UX를 기본으로 삼되, LLM 세션과 마우스/자
 - `python Test/TestResize/test_unit.py`
 
 **남은 큰 기능 (Phase 6+):**
-- Tab / Window 계층
 - Copy mode / 텍스트 선택
 - Flow (세션 A 출력 → 가공 → 세션 B 입력)
 - Remote (WebSocket / 브라우저 연결)
@@ -150,6 +151,7 @@ terminalist/
 │   └── session_manager.py
 ├── frontend/
 │   ├── split_tree.py
+│   ├── window_state.py
 │   ├── screen_sync.py
 │   ├── compositor.py
 │   └── vt100_writer.py

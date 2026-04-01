@@ -8,6 +8,7 @@ Usage:
     terminalist [--debug]
 
 Keys (Ctrl+B prefix):
+    w       new window
     v/h     split vertical/horizontal
     arrows  focus pane
     Ctrl+arrows  resize pane
@@ -16,6 +17,7 @@ Keys (Ctrl+B prefix):
     s       new shell
     c       new Claude session
     o       new Codex session
+    n/p/1-5 switch windows
     Ctrl+C  quit
     Ctrl+B  send literal Ctrl+B
 """
@@ -26,31 +28,27 @@ import argparse
 import signal
 import sys
 import time
-from pathlib import Path
 
 from pyte.screens import Char
 
 from terminalist.core.pane import Pane, Rect
 from terminalist.core.session_manager import SessionManager
-from terminalist.core.terminal_session import SessionState
-from terminalist.debug import init_debug, log, detect_env
+from terminalist.debug import detect_env, init_debug, log
 from terminalist.events.tes import EventStreamManager
 from terminalist.frontend.compositor import Compositor
 from terminalist.frontend.split_tree import (
     Direction,
     Leaf,
-    Split,
-    SplitNode,
     all_panes,
     can_split,
     find_neighbor,
     hit_test,
-    layout,
     remove_pane,
     split_pane,
     adjust_ratio,
 )
 from terminalist.frontend.vt100_writer import VT100Writer
+from terminalist.frontend.window_state import WindowState
 from terminalist.input.handler import InputState, process_events
 from terminalist.input.win32 import (
     MOUSE_WHEELED,
@@ -75,20 +73,15 @@ class App:
 
         self._tes = EventStreamManager()
         self._sm = SessionManager(self._tes)
-        self._root: SplitNode | None = None
-        self._focused: Pane | None = None
+        self._windows: list[WindowState] = []
+        self._active_window_idx = 0
+        self._window_history: list[str] = []
         self._writer = VT100Writer()
         self._compositor: Compositor | None = None
         self._running = False
         self._pane_counter = 0
+        self._window_counter = 0
         self._input_state = InputState()
-        self._focus_history: list[str] = []
-
-        # Zoom state
-        self._zoom_pane: Pane | None = None
-        self._pre_zoom_root: SplitNode | None = None
-
-        # Delayed redraw after split/resize (give PTY time to re-render)
         self._pending_redraw_at: float = 0.0
 
     def run(self) -> None:
@@ -97,9 +90,6 @@ class App:
         rows, cols = terminal_size()
         log("app", f"=== Terminalist starting (env={env}, {cols}x{rows}) ===")
 
-        # Redirect stderr to debug log so tracebacks are captured
-        # even when alt screen is active (stderr would be invisible)
-        import io
         stderr_log = open(f"terminalist_stderr_{env}.log", "w", encoding="utf-8")
         old_stderr = sys.stderr
         sys.stderr = stderr_log
@@ -107,25 +97,20 @@ class App:
 
         enter_alt_screen()
         self._compositor = Compositor(cols, rows, self._writer)
-
-        # Create initial shell pane
-        pane = self._create_pane("powershell")
-        self._root = Leaf(pane)
-        self._focused = None  # _set_focus will set it
-        self._set_focus(pane)
-        layout(self._root, self._pane_area_rect(rows, cols))
-        self._compositor.full_redraw()
+        self._bootstrap_initial_window(rows, cols)
 
         self._running = True
 
-        # SIGINT → forward to active PTY
         prev_handler = signal.getsignal(signal.SIGINT)
+
         def on_sigint(_s, _f):
-            if self._focused:
+            active_pane = self._active_pane()
+            if active_pane:
                 try:
-                    self._focused.write_raw("\x03")
+                    active_pane.write_raw("\x03")
                 except Exception:
                     pass
+
         signal.signal(signal.SIGINT, on_sigint)
 
         try:
@@ -139,7 +124,6 @@ class App:
             signal.signal(signal.SIGINT, prev_handler)
             self._cleanup()
             exit_alt_screen()
-            # Restore stderr
             sys.stderr = old_stderr
             stderr_log.close()
             log("app", "=== Terminalist exited ===")
@@ -150,38 +134,41 @@ class App:
         last_size = terminal_size()
 
         while self._running:
-            # Any pane alive?
-            if self._root is None:
+            if not self._windows:
                 break
-            panes = all_panes(self._root)
+
+            panes = self._all_panes()
             if not panes:
                 break
             if not any(p.session.is_alive() for p in panes):
                 break
 
-            # ── Resize check ──
             new_size = terminal_size()
             if new_size != last_size:
                 last_size = new_size
                 rows, cols = new_size
                 self._compositor.resize(cols, rows)
-                layout(self._root, self._pane_area_rect(rows, cols))
+                active_window = self._active_window()
+                if active_window is not None:
+                    self._layout_window(active_window, rows, cols)
+                for index, window in enumerate(self._windows):
+                    if index != self._active_window_idx:
+                        window.needs_layout = True
                 self._compositor.full_redraw()
                 log("app", f"Terminal resized: {cols}x{rows}")
 
-            # ── Input ──
             if has_events(h_in):
                 keys, mice = read_batch(h_in)
 
-                # Mouse events
                 for me in mice:
                     self._handle_mouse_event(me)
 
                 if keys:
-                    if self._focused and self._focused.in_copy_mode:
-                        self._focused.reset_scroll()
+                    active_pane = self._active_pane()
+                    if active_pane and active_pane.in_copy_mode:
+                        active_pane.reset_scroll()
                         self._compositor.mark_dirty()
-                    write_target = self._focused.write_raw if self._focused else lambda s: None
+                    write_target = active_pane.write_raw if active_pane else (lambda s: None)
                     result = process_events(
                         keys,
                         write_target,
@@ -195,23 +182,97 @@ class App:
             else:
                 time.sleep(0.01)
 
-            # ── Pending full redraw (after split/resize, PTY had time to re-render) ──
             if self._pending_redraw_at and time.monotonic() >= self._pending_redraw_at:
                 self._pending_redraw_at = 0.0
                 self._compositor.full_redraw()
 
-            # ── Render ──
-            if self._compositor.needs_render() and self._root:
+            active_window = self._active_window()
+            active_root = active_window.active_root() if active_window else None
+            if self._compositor.needs_render() and active_root:
                 rows, cols = last_size
                 self._compositor.render(
-                    self._root,
+                    active_root,
                     self._pane_area_rect(rows, cols),
-                    self._focused,
+                    active_window.focused,
                     status_line=self._build_status_line(cols),
                     status_y=self._status_line_y(rows),
                 )
 
-    # ── Pane creation ──
+    # ── Window helpers ──
+
+    def _bootstrap_initial_window(self, rows: int, cols: int) -> None:
+        pane = self._create_pane("powershell")
+        window = self._create_window_state(pane)
+        self._windows = [window]
+        self._active_window_idx = 0
+        self._activate_window(0, size=(rows, cols))
+        self._compositor.full_redraw()
+
+    def _create_window_state(self, pane: Pane) -> WindowState:
+        self._window_counter += 1
+        window = WindowState(window_id=f"window_{self._window_counter}", root=Leaf(pane))
+        window.set_focus(pane)
+        return window
+
+    def _active_window(self) -> WindowState | None:
+        if not self._windows:
+            return None
+        if not (0 <= self._active_window_idx < len(self._windows)):
+            return None
+        return self._windows[self._active_window_idx]
+
+    def _active_pane(self) -> Pane | None:
+        window = self._active_window()
+        return window.focused if window else None
+
+    def _all_panes(self) -> list[Pane]:
+        panes: list[Pane] = []
+        for window in self._windows:
+            panes.extend(window.all_panes())
+        return panes
+
+    def _window_by_id(self, window_id: str) -> WindowState | None:
+        for window in self._windows:
+            if window.window_id == window_id:
+                return window
+        return None
+
+    def _activate_window(self, index: int, size: tuple[int, int] | None = None) -> None:
+        if not (0 <= index < len(self._windows)):
+            return
+
+        previous = self._active_window()
+        target = self._windows[index]
+        same_window = previous is target
+
+        if previous is not None and not same_window:
+            previous.deactivate()
+
+        self._active_window_idx = index
+        if not target.is_active:
+            target.activate()
+
+        self._window_history = [wid for wid in self._window_history if wid != target.window_id]
+        self._window_history.append(target.window_id)
+
+        rows, cols = size or terminal_size()
+        if target.needs_layout or target.last_layout_size != (rows, cols):
+            self._layout_window(target, rows, cols)
+
+        self._compositor.full_redraw()
+        log("window", f"Activate → slot={index + 1} id={target.window_id}")
+
+    def _layout_window(self, window: WindowState, rows: int, cols: int) -> None:
+        window.layout(self._pane_area_rect(rows, cols), terminal_size=(rows, cols))
+
+    def _clear_zoom_for_mutation(self, window: WindowState) -> None:
+        if window.zoom_pane is None:
+            return
+        window.clear_zoom()
+        rows, cols = terminal_size()
+        self._layout_window(window, rows, cols)
+
+    # ── Pane / window creation ──
 
     def _create_pane(self, provider: str) -> Pane:
         """Create a new pane with a PTY session."""
@@ -219,32 +280,48 @@ class App:
         pane_id = f"pane_{self._pane_counter}"
 
         workspace = "."
-        if self._focused and hasattr(self._focused.session, "current_dir"):
-            workspace = str(self._focused.session.current_dir)
+        active_pane = self._active_pane()
+        if active_pane and hasattr(active_pane.session, "current_dir"):
+            workspace = str(active_pane.session.current_dir)
 
         session = self._sm.create(provider, workspace=workspace)
         pane = Pane(pane_id, session)
 
-        # Connect dirty listener → compositor
-        session.add_dirty_listener(self._compositor.mark_dirty)
-
-        # Track bracketed paste from PTY output
+        session.add_dirty_listener(lambda p=pane: self._mark_dirty_for_pane(p))
         session.add_raw_output_listener(self._input_state.track_bracketed_paste)
 
         log("app", f"Created pane {pane_id} ({provider}) session={session.session_id}")
         return pane
 
+    def _new_window(self, provider: str = "powershell") -> None:
+        new_pane = self._create_pane(provider)
+        window = self._create_window_state(new_pane)
+        self._windows.append(window)
+        self._activate_window(len(self._windows) - 1)
+        log("window", f"New window {window.window_id} provider={provider}")
+
+    def _mark_dirty_for_pane(self, pane: Pane) -> None:
+        active_window = self._active_window()
+        if active_window is None:
+            return
+        if any(candidate is pane for candidate in active_window.visible_panes()):
+            self._compositor.mark_dirty()
+
+    # ── Mouse / focus ──
+
     def _handle_mouse_event(self, me) -> None:
-        """Route both Win32 MouseEvent and synthetic SGR mouse events."""
+        active_window = self._active_window()
+        active_root = active_window.active_root() if active_window else None
+
         if me.flags & MOUSE_WHEELED:
             # Windows sets the sign bit for wheel-up, but our viewport model is
             # intentionally inverted from raw wheel direction:
             #   wheel-up   -> move down toward live output
             #   wheel-down -> move up into scrollback history
             direction = "down" if me.buttons & 0x80000000 else "up"
-            target = hit_test(self._root, me.x, me.y) if self._root else None
+            target = hit_test(active_root, me.x, me.y) if active_root else None
             if target is None:
-                target = self._focused
+                target = active_window.focused if active_window else None
             if target is None:
                 log("mouse", f"scroll {direction} at ({me.x},{me.y}) (no target)")
                 return
@@ -264,39 +341,26 @@ class App:
             return
 
         if me.buttons == 0x0001 and me.flags == 0:
-            clicked = hit_test(self._root, me.x, me.y) if self._root else None
-            if clicked and clicked != self._focused:
-                self._set_focus(clicked)
+            clicked = hit_test(active_root, me.x, me.y) if active_root else None
+            if clicked and active_window and clicked is not active_window.focused:
+                active_window.set_focus(clicked)
+                self._compositor.mark_dirty()
                 log("mouse", f"click → focus {clicked.pane_id} at ({me.x},{me.y})")
             else:
                 log("mouse", f"click at ({me.x},{me.y}) (no pane change)")
 
-    # ── Focus management ──
-
-    def _set_focus(self, pane: Pane) -> None:
-        """Single entry point for all focus changes.
-
-        Ensures blur()/focus() contract (enter_manual/exit_manual) is
-        always honored. Marks compositor dirty for border highlight update.
-        """
-        if self._focused is pane:
-            return
-        if self._focused:
-            self._focused.blur()
-        self._focused = pane
-        pane.focus()
-        self._focus_history = [pane_id for pane_id in self._focus_history if pane_id != pane.pane_id]
-        self._focus_history.append(pane.pane_id)
-        self._compositor.mark_dirty()
-        log("focus", f"Focus → {pane.pane_id}")
-
     # ── Prefix action dispatch ──
 
     def _dispatch_prefix(self, action: str, input_count: int) -> None:
-        """Handle prefix key action from keymap."""
         log("app", f"Prefix action: {action}")
 
         match action:
+            case "new_window":
+                self._new_window("powershell")
+            case "next_tab":
+                self._cycle_window(1)
+            case "prev_tab":
+                self._cycle_window(-1)
             case "split_vertical":
                 self._split(Direction.VERTICAL)
             case "split_horizontal":
@@ -330,75 +394,109 @@ class App:
             case "confirm_quit" | "detach":
                 self._running = False
             case "send_prefix_char":
-                if self._focused:
-                    self._focused.write_raw("\x02")
+                active_pane = self._active_pane()
+                if active_pane:
+                    active_pane.write_raw("\x02")
+            case _ if action.startswith("goto_tab_"):
+                try:
+                    slot = int(action.rsplit("_", 1)[1]) - 1
+                except ValueError:
+                    return
+                self._goto_window_slot(slot)
             case _:
                 log("app", f"Unhandled prefix action: {action}")
 
-    # ── Split ──
+    def _cycle_window(self, delta: int) -> None:
+        if len(self._windows) <= 1:
+            return
+        new_index = (self._active_window_idx + delta) % len(self._windows)
+        self._activate_window(new_index)
+
+    def _goto_window_slot(self, slot: int) -> None:
+        if 0 <= slot < len(self._windows):
+            self._activate_window(slot)
+
+    # ── Split / close / focus / resize ──
 
     def _split(self, direction: Direction) -> None:
-        if not self._focused or not self._root:
+        window = self._active_window()
+        if window is None or window.focused is None or window.root is None:
             return
-        if not can_split(self._focused.rect, direction):
+
+        self._clear_zoom_for_mutation(window)
+
+        if not can_split(window.focused.rect, direction):
             log("app", "Split rejected: pane too small")
             return
 
-        source_pane = self._focused
+        source_pane = window.focused
         new_pane = self._create_pane("powershell")
-        self._root = split_pane(self._root, source_pane.pane_id, new_pane, direction)
-        # Match common multiplexer UX: after splitting, the newly created
-        # pane becomes active so repeated splits operate on the latest pane.
-        self._set_focus(new_pane)
+        window.root = split_pane(window.root, source_pane.pane_id, new_pane, direction)
+        window.set_focus(new_pane)
+
         rows, cols = terminal_size()
-        layout(self._root, self._pane_area_rect(rows, cols))
-        # Don't full_redraw immediately — PTY needs time to re-render after resize.
-        # mark_dirty lets the next tick render after PTY output arrives.
+        self._layout_window(window, rows, cols)
         self._compositor.mark_dirty()
-        # But also schedule a delayed full_redraw to catch PTY re-renders
         self._pending_redraw_at = time.monotonic() + 0.2
         log("app", f"Split {direction.value}: {source_pane.pane_id} + {new_pane.pane_id} (focus={new_pane.pane_id})")
 
-    # ── Close pane ──
-
     def _close_pane(self) -> None:
-        if not self._focused or not self._root:
+        window = self._active_window()
+        if window is None or window.focused is None or window.root is None:
             return
 
-        # If zoomed, exit zoom first and operate on the real tree
-        if self._zoom_pane:
-            real_root = self._pre_zoom_root
-            self._zoom_pane = None
-            self._pre_zoom_root = None
-            self._root = real_root
+        self._clear_zoom_for_mutation(window)
 
-        old_id = self._focused.pane_id
-        old_session_id = self._focused.session.session_id
+        old_pane = window.focused
+        old_id = old_pane.pane_id
+        old_session_id = old_pane.session.session_id
 
-        # Find a neighbor to focus after close
         neighbor = (
-            find_neighbor(self._root, old_id, Direction.VERTICAL, True)
-            or find_neighbor(self._root, old_id, Direction.VERTICAL, False)
-            or find_neighbor(self._root, old_id, Direction.HORIZONTAL, True)
-            or find_neighbor(self._root, old_id, Direction.HORIZONTAL, False)
+            find_neighbor(window.root, old_id, Direction.VERTICAL, True)
+            or find_neighbor(window.root, old_id, Direction.VERTICAL, False)
+            or find_neighbor(window.root, old_id, Direction.HORIZONTAL, True)
+            or find_neighbor(window.root, old_id, Direction.HORIZONTAL, False)
         )
 
-        # Remove from tree
-        self._root, replacement = remove_pane(self._root, old_id)
+        window.root, replacement = remove_pane(window.root, old_id)
+        if window.zoom_pane is old_pane:
+            window.clear_zoom()
         self._sm.destroy(old_session_id)
 
-        if self._root is None:
-            self._running = False
+        if window.root is None:
+            old_window_id = window.window_id
+            window.deactivate()
+            del self._windows[self._active_window_idx]
+            self._window_history = [wid for wid in self._window_history if wid != old_window_id]
+
+            if not self._windows:
+                self._running = False
+                return
+
+            new_index = None
+            for window_id in reversed(self._window_history):
+                candidate = self._window_by_id(window_id)
+                if candidate is None:
+                    continue
+                new_index = self._windows.index(candidate)
+                break
+
+            if new_index is None:
+                new_index = min(self._active_window_idx, len(self._windows) - 1)
+
+            self._activate_window(new_index)
+            self._pending_redraw_at = time.monotonic() + 0.2
+            log("window", f"Closed last pane in {old_window_id}, active slot={self._active_window_idx + 1}")
             return
 
-        alive = {pane.pane_id: pane for pane in all_panes(self._root)}
-        self._focus_history = [
-            pane_id for pane_id in self._focus_history
+        alive = {pane.pane_id: pane for pane in window.all_panes()}
+        window.focus_history = [
+            pane_id for pane_id in window.focus_history
             if pane_id != old_id and pane_id in alive
         ]
 
         new_focus = None
-        for pane_id in reversed(self._focus_history):
+        for pane_id in reversed(window.focus_history):
             new_focus = alive.get(pane_id)
             if new_focus is not None:
                 break
@@ -409,90 +507,82 @@ class App:
                 new_focus = replacement_panes[0]
 
         if new_focus is None:
-            new_focus = neighbor or all_panes(self._root)[0]
+            new_focus = neighbor or window.all_panes()[0]
 
-        self._set_focus(new_focus)
-
+        window.set_focus(new_focus)
         rows, cols = terminal_size()
-        layout(self._root, self._pane_area_rect(rows, cols))
+        self._layout_window(window, rows, cols)
         self._pending_redraw_at = time.monotonic() + 0.2
-        log("app", f"Closed pane {old_id}, focused {self._focused.pane_id}")
-
-    # ── Focus navigation ──
+        log("app", f"Closed pane {old_id}, focused {window.focused.pane_id}")
 
     def _focus_direction(self, direction: Direction, toward_second: bool) -> None:
-        if not self._focused or not self._root:
+        window = self._active_window()
+        active_root = window.active_root() if window else None
+        if window is None or window.focused is None or active_root is None:
             return
-        neighbor = find_neighbor(self._root, self._focused.pane_id, direction, toward_second)
-        if neighbor and neighbor != self._focused:
-            self._set_focus(neighbor)
+        neighbor = find_neighbor(active_root, window.focused.pane_id, direction, toward_second)
+        if neighbor and neighbor is not window.focused:
+            window.set_focus(neighbor)
+            self._compositor.mark_dirty()
 
     def _resize_pane(self, direction: Direction, toward_second: bool) -> None:
-        if not self._focused or not self._root:
+        window = self._active_window()
+        if window is None or window.focused is None or window.root is None:
+            return
+        if window.zoom_pane is not None:
+            log("layout", "Resize ignored: window is zoomed")
             return
 
         delta = 0.05 if toward_second else -0.05
-        if not adjust_ratio(self._root, self._focused.pane_id, direction, delta):
+        if not adjust_ratio(window.root, window.focused.pane_id, direction, delta):
             log(
                 "layout",
-                f"Resize ignored: pane={self._focused.pane_id} dir={direction.value} delta={delta:+.2f}",
+                f"Resize ignored: pane={window.focused.pane_id} dir={direction.value} delta={delta:+.2f}",
             )
             return
 
         rows, cols = terminal_size()
-        layout(self._root, self._pane_area_rect(rows, cols))
+        self._layout_window(window, rows, cols)
         self._compositor.full_redraw()
         self._pending_redraw_at = time.monotonic() + 0.2
         log(
             "layout",
-            f"Resize applied: pane={self._focused.pane_id} dir={direction.value} delta={delta:+.2f}",
+            f"Resize applied: pane={window.focused.pane_id} dir={direction.value} delta={delta:+.2f}",
         )
 
-    # ── New session in split ──
-
     def _new_session_split(self, provider: str) -> None:
-        """Create new session in a vertical split."""
-        if not self._focused or not self._root:
+        window = self._active_window()
+        if window is None or window.focused is None or window.root is None:
             return
+
+        self._clear_zoom_for_mutation(window)
+
         direction = Direction.VERTICAL
-        if not can_split(self._focused.rect, direction):
+        if not can_split(window.focused.rect, direction):
             direction = Direction.HORIZONTAL
-            if not can_split(self._focused.rect, direction):
+            if not can_split(window.focused.rect, direction):
                 log("app", f"Cannot split for new {provider}: too small")
                 return
 
         new_pane = self._create_pane(provider)
-        self._root = split_pane(self._root, self._focused.pane_id, new_pane, direction)
-
-        # Focus the new pane
-        self._set_focus(new_pane)
+        window.root = split_pane(window.root, window.focused.pane_id, new_pane, direction)
+        window.set_focus(new_pane)
 
         rows, cols = terminal_size()
-        layout(self._root, self._pane_area_rect(rows, cols))
+        self._layout_window(window, rows, cols)
         self._pending_redraw_at = time.monotonic() + 0.2
         log("app", f"New {provider} session in split: {new_pane.pane_id}")
 
-    # ── Zoom ──
-
     def _toggle_zoom(self) -> None:
-        if not self._focused or not self._root:
+        window = self._active_window()
+        if window is None or window.focused is None or window.root is None:
             return
 
-        if self._zoom_pane:
-            # Restore from zoom
-            self._root = self._pre_zoom_root
-            self._zoom_pane = None
-            self._pre_zoom_root = None
-            log("app", "Zoom OFF")
-        else:
-            # Zoom focused pane
-            self._pre_zoom_root = self._root
-            self._zoom_pane = self._focused
-            self._root = Leaf(self._focused)
-            log("app", f"Zoom ON: {self._focused.pane_id}")
+        zoom_on = window.toggle_zoom()
+        log("app", f"Zoom {'ON' if zoom_on else 'OFF'}: {window.focused.pane_id}")
 
         rows, cols = terminal_size()
-        layout(self._root, self._pane_area_rect(rows, cols))
+        self._layout_window(window, rows, cols)
         self._compositor.mark_dirty()
         self._pending_redraw_at = time.monotonic() + 0.2
 
@@ -509,30 +599,40 @@ class App:
     def _build_status_line(self, width: int) -> list[Char]:
         base = Char(" ", "white", "bright_black", False, False, False, False, False, False)
         chars = [base for _ in range(max(0, width))]
-        if not self._root or width <= 0:
+        if width <= 0:
             return chars
 
         x = 0
-        for pane in all_panes(self._root):
-            focused = pane is self._focused
-            marker = "*" if focused else " "
-            provider = self._provider_label(pane)
-            state = getattr(getattr(pane.session, "state", None), "value", None)
-            segment = f"[{marker}{pane.pane_id}: {provider}"
-            if state:
-                segment += f" {state}"
-            if pane.scroll_offset:
-                segment += f" scroll={pane.scroll_offset}"
-            segment += "] "
+        for slot, window in enumerate(self._windows, start=1):
+            active = slot - 1 == self._active_window_idx
+            label = self._window_label(window)
+            segment = f"[{'*' if active else ' '}{slot}:{label}] "
             x = self._write_status_segment(
                 chars,
                 x,
                 segment,
-                fg="green" if focused else "white",
-                bold=focused,
+                fg="green" if active else "white",
+                bold=active,
             )
             if x >= width:
-                break
+                return chars
+
+        active_window = self._active_window()
+        active_pane = active_window.focused if active_window else None
+        if active_pane is None:
+            return chars
+
+        provider = self._provider_label(active_pane)
+        state = getattr(getattr(active_pane.session, "state", None), "value", None)
+        right_segment = f"[{active_pane.pane_id}: {provider}"
+        if state:
+            right_segment += f" {state}"
+        if active_pane.scroll_offset:
+            right_segment += f" scroll={active_pane.scroll_offset}"
+        right_segment += "]"
+
+        start = max(x, width - len(right_segment))
+        self._write_status_segment(chars, start, right_segment, fg="green", bold=True)
         return chars
 
     @staticmethod
@@ -552,6 +652,15 @@ class App:
             x += 1
         return x
 
+    def _window_label(self, window: WindowState) -> str:
+        pane = window.focused
+        if pane is None:
+            panes = window.all_panes()
+            pane = panes[0] if panes else None
+        if pane is None:
+            return "window"
+        return self._provider_label(pane)
+
     @staticmethod
     def _provider_label(pane: Pane) -> str:
         session = pane.session
@@ -566,12 +675,11 @@ class App:
     # ── Cleanup ──
 
     def _cleanup(self) -> None:
-        if self._root:
-            for pane in all_panes(self._root):
-                try:
-                    self._sm.destroy(pane.session.session_id)
-                except Exception:
-                    pass
+        for pane in self._all_panes():
+            try:
+                self._sm.destroy(pane.session.session_id)
+            except Exception:
+                pass
         self._tes.close()
 
 

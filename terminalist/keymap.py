@@ -35,6 +35,7 @@ PREFIX_KEYS: list[KeyDef] = [
     KeyDef("c", "new_claude", "New Claude"),
     KeyDef("o", "new_codex", "New Codex"),
     KeyDef("s", "new_shell", "New Shell"),
+    KeyDef("w", "new_window", "New Window"),
     KeyDef("v", "split_vertical", "VSplit"),
     KeyDef("h", "split_horizontal", "HSplit"),
     KeyDef("x", "close_pane", "Close Pane"),
