@@ -62,7 +62,6 @@ def can_split(rect: Rect, direction: Direction) -> bool:
 def _split_sizes(total: int, ratio: float, min_size: int) -> tuple[int, int]:
     """Calculate first/second sizes for a split, with clamping.
 
-    Shared between layout() and _borders_recursive() to avoid inconsistency.
     Returns (first_size, second_size). Both >= min_size.
     """
     first = max(min_size, int(total * ratio) - 1)
@@ -76,30 +75,120 @@ def _split_sizes(total: int, ratio: float, min_size: int) -> tuple[int, int]:
 
 
 def layout(node: SplitNode, rect: Rect) -> None:
-    """Recursively compute Rects for all Leaf panes.
+    """Compute shared-boundary frame rects + PTY content rects.
 
-    Accounts for 1-cell border between Split siblings.
-    Calls pane.set_rect() on each Leaf.
-    Clamps all sizes to minimums (never negative/zero).
+    Frame rects represent the visual pane box and may share boundary
+    coordinates with siblings. Content rects remain gap-separated so
+    PTY content does not overwrite border cells.
+    """
+    layout_frames(node, rect, shared_boundary=True)
+    compute_content_rects(node, show_root_border=False)
+    for pane in all_panes(node):
+        log("layout", f"[{pane.pane_id}] frame={pane.frame_rect} content={pane.content_rect}")
+
+
+def layout_frames(node: SplitNode, rect: Rect, shared_boundary: bool) -> None:
+    """Assign visual frame rects to leaves.
+
+    When shared_boundary=True, sibling panes share the same split-line
+    coordinate. This matches the mask/owner renderer model.
     """
     if isinstance(node, Leaf):
-        clamped = Rect(rect.x, rect.y, max(rect.w, MIN_PANE_W), max(rect.h, MIN_PANE_H))
-        node.pane.set_rect(clamped)
-        log("layout", f"[{node.pane.pane_id}] rect={clamped}")
+        node.pane.frame_rect = Rect(rect.x, rect.y, max(rect.w, 1), max(rect.h, 1))
         return
 
-    if isinstance(node, Split):
-        if node.direction == Direction.VERTICAL:
-            first_w, second_w = _split_sizes(rect.w, node.ratio, MIN_PANE_W)
-            first_rect = Rect(rect.x, rect.y, first_w, rect.h)
-            second_rect = Rect(rect.x + first_w + 1, rect.y, second_w, rect.h)
-        else:
-            first_h, second_h = _split_sizes(rect.h, node.ratio, MIN_PANE_H)
-            first_rect = Rect(rect.x, rect.y, rect.w, first_h)
-            second_rect = Rect(rect.x, rect.y + first_h + 1, rect.w, second_h)
+    if not isinstance(node, Split):
+        return
 
-        layout(node.first, first_rect)
-        layout(node.second, second_rect)
+    if node.direction == Direction.VERTICAL:
+        first_w, second_w = _split_sizes(rect.w, node.ratio, MIN_PANE_W)
+        border_x = rect.x + first_w
+        use_shared = shared_boundary and can_split(rect, node.direction)
+        if use_shared:
+            first_rect = Rect(rect.x, rect.y, border_x - rect.x + 1, rect.h)
+            second_rect = Rect(border_x, rect.y, rect.right - border_x + 1, rect.h)
+        else:
+            first_rect = Rect(rect.x, rect.y, first_w, rect.h)
+            second_rect = Rect(border_x + 1, rect.y, second_w, rect.h)
+    else:
+        first_h, second_h = _split_sizes(rect.h, node.ratio, MIN_PANE_H)
+        border_y = rect.y + first_h
+        use_shared = shared_boundary and can_split(rect, node.direction)
+        if use_shared:
+            first_rect = Rect(rect.x, rect.y, rect.w, border_y - rect.y + 1)
+            second_rect = Rect(rect.x, border_y, rect.w, rect.bottom - border_y + 1)
+        else:
+            first_rect = Rect(rect.x, rect.y, rect.w, first_h)
+            second_rect = Rect(rect.x, border_y + 1, rect.w, second_h)
+
+    layout_frames(node.first, first_rect, shared_boundary)
+    layout_frames(node.second, second_rect, shared_boundary)
+
+
+def compute_content_rects(node: SplitNode, show_root_border: bool) -> None:
+    """Derive PTY content rects from shared-boundary frame rects."""
+    panes = all_panes(node)
+    if not panes:
+        return
+
+    root_left = min(pane.frame_rect.x for pane in panes)
+    root_top = min(pane.frame_rect.y for pane in panes)
+    root_right = max(pane.frame_rect.right for pane in panes)
+    root_bottom = max(pane.frame_rect.bottom for pane in panes)
+
+    for pane in panes:
+        frame = pane.frame_rect
+        left = frame.x
+        right = frame.right
+        top = frame.y
+        bottom = frame.bottom
+
+        if _edge_has_owner(pane, panes, "left") and (right - left + 1) > MIN_PANE_W:
+            left += 1
+        if _edge_has_owner(pane, panes, "right") and (right - left + 1) > MIN_PANE_W:
+            right -= 1
+        if _edge_has_owner(pane, panes, "top") and (bottom - top + 1) > MIN_PANE_H:
+            top += 1
+        if _edge_has_owner(pane, panes, "bottom") and (bottom - top + 1) > MIN_PANE_H:
+            bottom -= 1
+
+        if show_root_border and frame.x == root_left and (right - left + 1) > MIN_PANE_W:
+            left += 1
+        if show_root_border and frame.right == root_right and (right - left + 1) > MIN_PANE_W:
+            right -= 1
+        if show_root_border and frame.y == root_top and (bottom - top + 1) > MIN_PANE_H:
+            top += 1
+        if show_root_border and frame.bottom == root_bottom and (bottom - top + 1) > MIN_PANE_H:
+            bottom -= 1
+
+        if right < left:
+            left = right = frame.x + max(0, (frame.w - 1) // 2)
+        if bottom < top:
+            top = bottom = frame.y + max(0, (frame.h - 1) // 2)
+
+        content = Rect(left, top, max(1, right - left + 1), max(1, bottom - top + 1))
+        pane.set_geometry(frame, content)
+
+
+def _edge_has_owner(pane: Pane, panes: list[Pane], side: str) -> bool:
+    frame = pane.frame_rect
+    for other in panes:
+        if other is pane:
+            continue
+        other_frame = other.frame_rect
+        if side == "left":
+            if other_frame.right == frame.x and _range_overlap(frame.y, frame.bottom, other_frame.y, other_frame.bottom) > 0:
+                return True
+        elif side == "right":
+            if other_frame.x == frame.right and _range_overlap(frame.y, frame.bottom, other_frame.y, other_frame.bottom) > 0:
+                return True
+        elif side == "top":
+            if other_frame.bottom == frame.y and _range_overlap(frame.x, frame.right, other_frame.x, other_frame.right) > 0:
+                return True
+        elif side == "bottom":
+            if other_frame.y == frame.bottom and _range_overlap(frame.x, frame.right, other_frame.x, other_frame.right) > 0:
+                return True
+    return False
 
 
 # ── Tree traversal ──
@@ -165,35 +254,116 @@ def _split_recursive(
     return node
 
 
-def remove_pane(root: SplitNode, target_pane_id: str) -> SplitNode | None:
+def remove_pane(root: SplitNode, target_pane_id: str) -> tuple[SplitNode | None, SplitNode | None]:
     """Remove a Leaf and collapse its parent Split.
 
-    Returns new root, or None if tree becomes empty.
+    Returns (new_root, replacement_subtree). replacement_subtree is the
+    subtree that replaced the removed pane's parent, useful for focus
+    fallback after close.
     """
-    result = _remove_recursive(root, target_pane_id)
-    return result
+    new_root, removed, replacement = _remove_recursive(root, target_pane_id)
+    if not removed:
+        return root, None
+    return new_root, replacement
 
 
-def _remove_recursive(node: SplitNode, target: str) -> SplitNode | None:
+def _remove_recursive(node: SplitNode, target: str) -> tuple[SplitNode | None, bool, SplitNode | None]:
     if isinstance(node, Leaf):
-        return None if node.pane.pane_id == target else node
+        if node.pane.pane_id == target:
+            return None, True, None
+        return node, False, None
 
     if isinstance(node, Split):
-        new_first = _remove_recursive(node.first, target)
-        new_second = _remove_recursive(node.second, target)
+        new_first, removed_first, replacement_first = _remove_recursive(node.first, target)
+        if removed_first:
+            if new_first is None:
+                return node.second, True, node.second
+            node.first = new_first
+            return node, True, replacement_first
 
-        if new_first is None and new_second is None:
-            return None
-        if new_first is None:
-            return new_second
-        if new_second is None:
-            return new_first
+        new_second, removed_second, replacement_second = _remove_recursive(node.second, target)
+        if removed_second:
+            if new_second is None:
+                return node.first, True, node.first
+            node.second = new_second
+            return node, True, replacement_second
 
-        node.first = new_first
-        node.second = new_second
-        return node
+        return node, False, None
 
-    return node
+    return node, False, None
+
+
+# ── Split ratio adjustment ──
+
+
+def adjust_ratio(
+    root: SplitNode,
+    pane_id: str,
+    direction: Direction,
+    delta: float = 0.05,
+) -> bool:
+    """Adjust the nearest ancestor split on the requested axis.
+
+    `direction` is the split axis to adjust:
+    - Direction.VERTICAL   -> move a left/right divider
+    - Direction.HORIZONTAL -> move an up/down divider
+
+    Positive delta moves the divider toward the second pane (right/down),
+    negative delta toward the first pane (left/up).
+    """
+    path = _path_to_pane(root, pane_id)
+    if not path:
+        return False
+
+    for split in reversed(path):
+        if split.direction != direction:
+            continue
+
+        bounds = _subtree_bounds(split)
+        if bounds is None:
+            return False
+
+        total = bounds.w if direction == Direction.VERTICAL else bounds.h
+        min_size = MIN_PANE_W if direction == Direction.VERTICAL else MIN_PANE_H
+        if total < min_size * 2 + 1:
+            return False
+
+        min_ratio = (min_size + 1) / total
+        max_ratio = (total - min_size) / total
+        new_ratio = min(max(split.ratio + delta, min_ratio), max_ratio)
+        if abs(new_ratio - split.ratio) < 1e-9:
+            return False
+
+        split.ratio = new_ratio
+        return True
+
+    return False
+
+
+def _path_to_pane(node: SplitNode, pane_id: str) -> list[Split]:
+    if isinstance(node, Leaf):
+        return [] if node.pane.pane_id == pane_id else []
+
+    if isinstance(node, Split):
+        left_path = _path_to_pane(node.first, pane_id)
+        if left_path or find_leaf(node.first, pane_id):
+            return [*left_path, node]
+        right_path = _path_to_pane(node.second, pane_id)
+        if right_path or find_leaf(node.second, pane_id):
+            return [*right_path, node]
+
+    return []
+
+
+def _subtree_bounds(node: SplitNode) -> Rect | None:
+    panes = all_panes(node)
+    if not panes:
+        return None
+    left = min(pane.frame_rect.x for pane in panes)
+    top = min(pane.frame_rect.y for pane in panes)
+    right = max(pane.frame_rect.right for pane in panes)
+    bottom = max(pane.frame_rect.bottom for pane in panes)
+    return Rect(left, top, right - left + 1, bottom - top + 1)
 
 
 # ── Neighbor finding ──
@@ -216,158 +386,70 @@ def find_neighbor(
     source_leaf = find_leaf(root, pane_id)
     if not source_leaf:
         return None
-    source_rect = source_leaf.pane.rect
-
-    path = _path_to(root, pane_id)
-    if not path:
-        return None
-
-    # Walk up the path to find a Split with matching direction
-    for i in range(len(path) - 1, -1, -1):
-        node = path[i]
-        if not isinstance(node, Split):
-            continue
-        if node.direction != direction:
+    source_rect = source_leaf.pane.frame_rect
+    candidates: list[tuple[int, float, Pane]] = []
+    for pane in all_panes(root):
+        if pane.pane_id == pane_id:
             continue
 
-        child_idx = _which_child(node, pane_id)
-        if child_idx is None:
+        other = pane.frame_rect
+        if direction == Direction.VERTICAL:
+            if toward_second:
+                if other.x != source_rect.right:
+                    continue
+            else:
+                if other.right != source_rect.x:
+                    continue
+            overlap = _range_overlap(source_rect.y, source_rect.bottom, other.y, other.bottom)
+            distance = abs(other.center_y - source_rect.center_y)
+        else:
+            if toward_second:
+                if other.y != source_rect.bottom:
+                    continue
+            else:
+                if other.bottom != source_rect.y:
+                    continue
+            overlap = _range_overlap(source_rect.x, source_rect.right, other.x, other.right)
+            distance = abs(other.center_x - source_rect.center_x)
+
+        if overlap <= 0:
             continue
+        candidates.append((-overlap, distance, pane))
 
-        if toward_second and child_idx == "first":
-            # Target is in first, neighbor is in second
-            return _nearest_pane(node.second, source_rect, direction)
-        elif not toward_second and child_idx == "second":
-            # Target is in second, neighbor is in first
-            return _nearest_pane(node.first, source_rect, direction)
-
-    return None
-
-
-def _path_to(root: SplitNode, pane_id: str) -> list[SplitNode]:
-    """Return path from root to the Leaf with pane_id (inclusive)."""
-    if isinstance(root, Leaf):
-        return [root] if root.pane.pane_id == pane_id else []
-    if isinstance(root, Split):
-        for child in (root.first, root.second):
-            path = _path_to(child, pane_id)
-            if path:
-                return [root] + path
-    return []
-
-
-def _which_child(split: Split, pane_id: str) -> str | None:
-    """Determine if pane_id is in 'first' or 'second' subtree."""
-    if find_leaf(split.first, pane_id):
-        return "first"
-    if find_leaf(split.second, pane_id):
-        return "second"
-    return None
-
-
-def _rect_overlap(a: Rect, b: Rect, direction: Direction) -> int:
-    """Calculate overlap between two rects on the axis perpendicular to direction.
-
-    For vertical movement (left/right): overlap on Y axis.
-    For horizontal movement (up/down): overlap on X axis.
-    """
-    if direction == Direction.VERTICAL:
-        # Overlap on Y axis
-        start = max(a.y, b.y)
-        end = min(a.y + a.h, b.y + b.h)
-    else:
-        # Overlap on X axis
-        start = max(a.x, b.x)
-        end = min(a.x + a.w, b.x + b.w)
-    return max(0, end - start)
-
-
-def _nearest_pane(node: SplitNode, source_rect: Rect, direction: Direction) -> Pane | None:
-    """Find the pane in subtree that overlaps most with source_rect on the perpendicular axis.
-
-    In a 2x2 grid moving right from bottom-left, this picks
-    bottom-right (overlapping rows) instead of top-right.
-    """
-    candidates = all_panes(node)
     if not candidates:
         return None
-    if len(candidates) == 1:
-        return candidates[0]
+    candidates.sort(key=lambda item: (item[0], item[1], item[2].pane_id))
+    return candidates[0][2]
 
-    best = None
-    best_overlap = -1
-    for pane in candidates:
-        overlap = _rect_overlap(source_rect, pane.rect, direction)
-        if overlap > best_overlap:
-            best_overlap = overlap
-            best = pane
-    return best
+def _range_overlap(a1: int, a2: int, b1: int, b2: int) -> int:
+    start = max(a1, b1)
+    end = min(a2, b2)
+    return max(0, end - start + 1)
 
 
 # ── Hit test (mouse click → pane) ──
 
 
 def hit_test(node: SplitNode, x: int, y: int) -> Pane | None:
-    """Find the Pane at screen coordinates (x, y).
+    """Find the pane at screen coordinates using content rects.
 
-    Returns None if coordinates are on a border or outside all panes.
+    Border cells are already excluded because hit-testing uses content_rect,
+    not the visual frame rect. Bounds stay inclusive so 1xN / Nx1 content
+    panes remain clickable without special casing.
     """
-    if isinstance(node, Leaf):
-        r = node.pane.rect
-        if r.x <= x < r.x + r.w and r.y <= y < r.y + r.h:
-            return node.pane
+    if node is None:
         return None
 
-    if isinstance(node, Split):
-        # Try both children — coordinates will match at most one
-        result = hit_test(node.first, x, y)
-        if result:
-            return result
-        return hit_test(node.second, x, y)
+    hits: list[Pane] = []
+    for pane in all_panes(node):
+        r = pane.content_rect
+        inside = r.x <= x <= r.right and r.y <= y <= r.bottom
+        if inside:
+            hits.append(pane)
 
-    return None
-
-
-# ── Border collection ──
-
-
-@dataclass
-class BorderSegment:
-    """A border line segment between two panes.
-
-    Pure geometry — no active/focus state. Active highlight is
-    determined per-cell by compositor using focused pane's Rect.
-    """
-    x: int
-    y: int
-    length: int
-    direction: Direction
-
-
-def borders(node: SplitNode, rect: Rect) -> list[BorderSegment]:
-    """Collect all border segments for rendering."""
-    result: list[BorderSegment] = []
-    _borders_recursive(node, rect, result)
-    return result
-
-
-def _borders_recursive(node: SplitNode, rect: Rect, out: list[BorderSegment]) -> None:
-    if isinstance(node, Leaf):
-        return
-
-    if isinstance(node, Split):
-        if node.direction == Direction.VERTICAL:
-            first_w, second_w = _split_sizes(rect.w, node.ratio, MIN_PANE_W)
-            border_x = rect.x + first_w
-            out.append(BorderSegment(border_x, rect.y, rect.h, Direction.VERTICAL))
-            first_rect = Rect(rect.x, rect.y, first_w, rect.h)
-            second_rect = Rect(border_x + 1, rect.y, second_w, rect.h)
-        else:
-            first_h, second_h = _split_sizes(rect.h, node.ratio, MIN_PANE_H)
-            border_y = rect.y + first_h
-            out.append(BorderSegment(rect.x, border_y, rect.w, Direction.HORIZONTAL))
-            first_rect = Rect(rect.x, rect.y, rect.w, first_h)
-            second_rect = Rect(rect.x, border_y + 1, rect.w, second_h)
-
-        _borders_recursive(node.first, first_rect, out)
-        _borders_recursive(node.second, second_rect, out)
+    if not hits:
+        return None
+    if len(hits) == 1:
+        return hits[0]
+    hits.sort(key=lambda pane: abs(pane.content_rect.center_x - x) + abs(pane.content_rect.center_y - y))
+    return hits[0]

@@ -29,6 +29,7 @@ KEY_EVENT = 0x0001
 MOUSE_EVENT = 0x0002
 ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
 ENABLE_MOUSE_INPUT = 0x0010
+ENABLE_EXTENDED_FLAGS = 0x0080
 
 kernel32 = ctypes.windll.kernel32
 user32 = ctypes.windll.user32
@@ -199,10 +200,16 @@ class RawConsoleInput:
 
     def __enter__(self) -> int:
         kernel32.GetConsoleMode(self.h_in, ctypes.byref(self._old_mode))
-        # Raw mode + mouse input enabled
-        # 0x0010 = ENABLE_MOUSE_INPUT (receive MOUSE_EVENT records)
-        kernel32.SetConsoleMode(self.h_in, 0x0010)
-        log("input", f"Console raw mode + mouse set (old=0x{self._old_mode.value:04x})")
+        # Match the working TestPane console setup:
+        # keep EXTENDED_FLAGS enabled while turning on mouse input.
+        # Without EXTENDED_FLAGS, hosts that start in QUICK_EDIT mode can
+        # swallow clicks/select instead of delivering MOUSE_EVENT records.
+        new_mode = ENABLE_EXTENDED_FLAGS | ENABLE_MOUSE_INPUT
+        kernel32.SetConsoleMode(self.h_in, new_mode)
+        log(
+            "input",
+            f"Console raw mode + mouse set (old=0x{self._old_mode.value:04x}, new=0x{new_mode:04x})",
+        )
         return self.h_in
 
     def __exit__(self, *exc) -> None:

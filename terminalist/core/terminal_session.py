@@ -13,6 +13,7 @@ import time
 from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 import pyte
@@ -183,7 +184,7 @@ class TerminalSession:
         """Return (cursor_x, cursor_y). Lightweight — no grid extraction."""
         return (self._screen.cursor.x, self._screen.cursor.y)
 
-    def get_screen_snapshot(self) -> tuple[list, int, int, int, int]:
+    def get_screen_snapshot(self, scroll_offset: int = 0) -> tuple[list, int, int, int, int]:
         """Return (grid, cursor_x, cursor_y, cols, rows) atomically under lock.
 
         Grid is list[list[pyte.Char]]. No frontend imports — core-owned.
@@ -193,19 +194,29 @@ class TerminalSession:
         with self._lock:
             rows = self._screen.lines
             cols = self._screen.columns
-            grid = []
-            for y in range(rows):
-                row = []
-                buf_row = self._screen.buffer[y]
-                for x in range(cols):
-                    try:
-                        row.append(buf_row[x])
-                    except (IndexError, KeyError):
-                        row.append(EMPTY)
-                grid.append(row)
-            cx = self._screen.cursor.x
-            cy = self._screen.cursor.y
+            history_top = list(getattr(getattr(self._screen, "history", None), "top", ()))
+            # Accessing buffer[y] materializes empty defaultdict rows. That is a
+            # real part of Terminalist's runtime behavior, and PreservingScreen
+            # resize is intentionally designed to stay safe under that condition.
+            visible_rows = [self._screen.buffer[y] for y in range(rows)]
+            viewport_rows, cx, cy = _viewport_rows(
+                history_top,
+                visible_rows,
+                rows,
+                self._screen.cursor.x,
+                self._screen.cursor.y,
+                max(0, scroll_offset),
+            )
+            grid = [
+                [_row_cell(row, x, EMPTY) for x in range(cols)]
+                for row in viewport_rows
+            ]
             return grid, cx, cy, cols, rows
+
+    def get_max_scroll_offset(self) -> int:
+        """Return how many lines this session can scroll upward."""
+        with self._lock:
+            return len(getattr(getattr(self._screen, "history", None), "top", ()))
 
     # ── PTY I/O (via backend) ──
 
@@ -391,3 +402,39 @@ class TerminalSession:
     def notify_data_available(self) -> None:
         if self.state == SessionState.READY:
             self._try_consume_next()
+
+
+def _row_cell(row, x: int, empty):
+    try:
+        return row[x]
+    except (IndexError, KeyError):
+        return empty
+
+
+_EMPTY_ROW = MappingProxyType({})
+
+
+def _viewport_rows(
+    history_top: list,
+    visible_rows: list,
+    screen_rows: int,
+    cursor_x: int,
+    cursor_y: int,
+    scroll_offset: int,
+) -> tuple[list, int, int]:
+    combined = history_top + visible_rows
+    if len(combined) < screen_rows:
+        # Shared read-only sentinel is enough here: rows are only read via
+        # _row_cell(), which turns KeyError into EMPTY chars.
+        combined = ([_EMPTY_ROW] * (screen_rows - len(combined))) + combined
+
+    max_offset = max(0, len(combined) - screen_rows)
+    offset = min(max(0, scroll_offset), max_offset)
+    start = max(0, len(combined) - screen_rows - offset)
+    viewport = combined[start:start + screen_rows]
+
+    cursor_abs = len(history_top) + cursor_y
+    cursor_rel = cursor_abs - start
+    if 0 <= cursor_rel < screen_rows and offset == 0:
+        return viewport, cursor_x, cursor_rel
+    return viewport, -1, -1

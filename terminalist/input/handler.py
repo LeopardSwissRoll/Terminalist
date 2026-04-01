@@ -242,6 +242,7 @@ def _decode_sgr_mouse(match: re.Match[str]) -> MouseEvent:
 
 # Import here to avoid circular — keymap is a pure data module
 _PREFIX_MAP: dict[str, str] | None = None
+_CTRL_PRESSED_MASK = 0x0004 | 0x0008
 
 
 def _get_prefix_map() -> dict[str, str]:
@@ -253,18 +254,19 @@ def _get_prefix_map() -> dict[str, str]:
     return _PREFIX_MAP
 
 
-def _vk_to_key_name(ch: str | None, vk: int) -> str | None:
+def _vk_to_key_name(ch: str | None, vk: int, ctrl: int = 0) -> str | None:
     """Convert a ReadConsoleInputW event to a keymap key name."""
     if ch == "\x03":
         return "ctrl+c"
     if ch == "\x02":
         return "ctrl+b"
-    if ch and ord(ch) >= 0x20:
-        return ch
     # Arrow keys
     vk_names = {0x26: "up", 0x28: "down", 0x25: "left", 0x27: "right"}
     if vk in vk_names:
-        return vk_names[vk]
+        prefix = "ctrl+" if ctrl & _CTRL_PRESSED_MASK else ""
+        return f"{prefix}{vk_names[vk]}"
+    if ch and ord(ch) >= 0x20:
+        return ch
     return None
 
 
@@ -284,7 +286,7 @@ def _read_prefix_action(
         return None
 
     ch2, vk2, ctrl2, repeat2 = read_key_blocking(h_in)
-    key_name = _vk_to_key_name(ch2, vk2)
+    key_name = _vk_to_key_name(ch2, vk2, ctrl2)
     if key_name is None:
         log("key", f"#{input_count} PREFIX → ch={ch2!r} vk=0x{vk2:04X} (no key name)")
         return None

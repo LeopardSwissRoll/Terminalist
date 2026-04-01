@@ -43,6 +43,11 @@ PREFIX_KEYS: list[KeyDef] = [
     KeyDef("down", "focus_pane_down", "Pane Down"),
     KeyDef("left", "focus_pane_left", "Pane Left"),
     KeyDef("right", "focus_pane_right", "Pane Right"),
+    # Pane resize (Ctrl+arrow after prefix)
+    KeyDef("ctrl+up", "resize_pane_up", "Resize Up"),
+    KeyDef("ctrl+down", "resize_pane_down", "Resize Down"),
+    KeyDef("ctrl+left", "resize_pane_left", "Resize Left"),
+    KeyDef("ctrl+right", "resize_pane_right", "Resize Right"),
     # Tab navigation (tmux: n/p for next/prev window, 0-9 for window number)
     KeyDef("n", "next_tab", "Next Tab"),
     KeyDef("p", "prev_tab", "Prev Tab"),
