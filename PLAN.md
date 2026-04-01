@@ -1,130 +1,100 @@
-# Plan: Phase 5 — 구조 정비 + UX 기능
+# Plan: Post-Phase 5 Roadmap
 
 ## Context
 
-Phase 4(multi-pane app.py)까지 완료. 터미널 멀티플렉서로서 기본 동작 확인됨
-(split, focus, close, zoom, Claude/Codex 실행).
+Phase 5 수준의 구조 정비와 UX 기본선은 완료됐다.
 
-Codex 아키텍처 리뷰에서 3가지 구조적 문제 지적:
-1. focus contract 불완전
-2. 레이어 간 private 속성 직접 접근
-3. 단일 트리 앱 → 탭/윈도우 확장 시 비대화 위험
+**이미 완료된 것:**
+- `_set_focus()` 기반 focus contract 통일
+- `TerminalSession` public snapshot API
+- `Pane.frame_rect / content_rect`
+- shared-boundary layout + geometry 기반 `find_neighbor()` / `hit_test()`
+- `mask/owner` border renderer
+- active border 하이라이트
+- mouse click → pane focus
+- wheel 기반 pane-local scrollback viewport
+- status line
+- `Ctrl+B` + `Ctrl+방향키` pane resize
+- 테스트 자산을 `Test/` 워크스페이스로 재구성
 
-Phase 5는 이 구조를 정비하면서 UX 기능을 추가하는 단계.
+현재 코드는 이미 multi-pane terminal multiplexer로서 기본 사용이 가능하다.
 
-## Part A: 구조 정비 — ✅ 완료
+## Current Baseline
 
-### A-1. Focus contract 완전 통일 ✅
+**제품 테스트**
+- `python -m pytest -q`
 
-`_set_focus(pane)` 헬퍼 추가. 모든 포커스 변경이 이 함수를 거쳐
-`blur()`/`focus()` → `exit_manual()`/`enter_manual()` 계약을 보장.
+**standalone 실험장**
+- `python -m pytest -q Test/TestPane/tests Test/TestVS/tests`
+- `python Test/TestResize/test_unit.py`
 
-적용: 초기화, close_pane, focus_direction, new_session_split.
+## Remaining Work
 
-### A-2. Public API 추출 ✅
+### 1. 문서 / 운영 정리
 
-TerminalSession에 public 메서드 추가:
-- `is_alive()`, `get_cursor_position()`, `get_screen_snapshot()`, `add_raw_output_listener()`
+- `CLAUDE.md`와 실제 구조를 계속 동기화
+- 실행/디버그 경로를 `Test/` 기준으로 유지
+- 필요시 `README` 추가
 
-`get_screen_snapshot()`은 **core 안에서 직접 grid 추출** (frontend import 없음).
-`frontend → core → events` 의존 방향 유지.
+### 2. Tab / Window 계층
 
-compositor, app, interactive, pane 전부 public API로 교체 완료.
+현재 `App`은 단일 split tree 기준이다.
 
-## Part B: UX 기능 — 남은 작업
+다음 단계에서는 아래 계층을 도입한다.
+- `Window`: 하나의 split tree + focused pane
+- `Tab` 또는 `Workspace`: 여러 window 관리
+- `App`: active window/tab 전환 담당
 
-### B-1. 활성 pane border 하이라이트
+목표:
+- `Ctrl+B n/p`
+- `Ctrl+B 1-9`
+- 탭/윈도우 상태 표시
 
-**현재**: 모든 border가 같은 색 (white).
-**목표**: focused pane 인접 border를 bright_white + bold.
+### 3. Copy Mode / Selection
 
-**설계 (Codex 피드백 반영)**:
-- **compositor가 판정하지 않음.** `split_tree.borders()`가 판정.
-- `BorderSegment`에 `active: bool` 필드 추가.
-- `borders(root, rect, focused_pane_id)` 시그니처로 변경.
-- split_tree 레벨에서 "이 border의 양쪽 자식 중 focused pane이 있는가?"를 판정.
-- compositor는 `seg.active`만 보고 BORDER_V_ACTIVE/BORDER_H_ACTIVE 선택.
+현재는 wheel scrollback viewport만 있다.
 
-**파일**: `terminalist/frontend/split_tree.py`, `terminalist/frontend/compositor.py`
-**테스트**: `test_split_tree.py`에 active border 테스트 추가
+다음 단계 목표:
+- copy mode 진입/탈출
+- 키보드 기반 viewport 이동
+- 텍스트 선택 / 복사
+- 상태바에 copy mode 표시
 
-### B-2. 마우스 클릭 → pane 포커스
+### 4. Flow
 
-**현재**: 마우스 이벤트 로깅만.
-**목표**: 좌클릭 → 히트테스트 → 해당 pane으로 포커스.
+LLM 특화 기능의 핵심.
 
-**수정**:
-- `split_tree.py`에 `hit_test(root, x, y) -> Pane | None` 추가
-- `app.py` 마우스 처리에서 클릭 시 `_set_focus(hit_test(...))`
+목표:
+- 세션 A의 출력 스트림을 가공
+- 세션 B 입력으로 라우팅
+- 수동/자동 연결 규칙
+- TES와의 결합 최소화
 
-**파일**: `terminalist/frontend/split_tree.py`, `terminalist/app.py`
-**테스트**: `test_split_tree.py`에 hit_test 테스트 추가
+### 5. Remote
 
-### B-3. 상태바 (Layer 1 최소 버전)
+브라우저/타 기기 연결.
 
-**현재**: 화면 전체가 pane + border.
-**목표**: 맨 아래 1줄에 상태바.
+목표:
+- VT frame / input event를 WebSocket으로 송수신
+- 로컬 콘솔 입력/출력 계층과 분리된 transport 도입
+- `frontend → core → events` 방향 유지
 
-**설계 (Codex 피드백 반영)**:
-- **compositor가 줄을 예약하지 않음.** app이 geometry를 소유.
-- app이 layout에 `Rect(0, 0, cols, rows - 1)` 넘김 (pane 영역).
-- app이 상태바 내용(Char 리스트)을 만들어서 compositor에 별도 전달.
-- compositor는 `render_status_line(chars, y)` 메서드로 마지막 줄만 그림.
+## Nice-to-Have Cleanup
 
-**상태바 내용**: `[*pane_1: powershell] [pane_2: claude]` — `*`가 focused.
+- `Pane.rect` 하위호환 alias 제거 시점 결정
+- `Compositor(show_root_border=...)`를 실제 옵션으로 노출할지 결정
+- `TestPane`과 본체 사이의 canonical prototype 관계 문서화
+- `Test/terminalist/unit` 내부의 유사 테스트를 추가 정리
 
-**파일**: `terminalist/frontend/compositor.py`, `terminalist/app.py`
-**테스트**: compositor render_status_line 단위 테스트
+## Not In Scope Right Now
 
-### B-4. Pane 리사이즈 (Ctrl+B Ctrl+방향키)
+- Textual 같은 외부 TUI 프레임워크 도입
+- 마우스 드래그 pane resize
+- 즉시 full remote protocol 설계
+- LLM 세션 내부 상태머신의 대규모 재설계
 
-**현재**: split ratio 고정 (0.5).
-**목표**: prefix + Ctrl+방향키로 경계선 이동.
+## Landing Strategy
 
-**UX 규칙 (Codex 피드백 반영)**:
-> "해당 방향과 축이 맞는 가장 가까운 조상 Split의 ratio를 조정한다."
-
-예: 2x2 grid에서 pane C에서 Ctrl+B Ctrl+→ 누르면:
-1. C에서 path를 올라가며 VERTICAL Split을 찾음
-2. 해당 Split의 ratio를 +0.05 (오른쪽으로 밀기)
-3. relayout → full_redraw
-
-**수정**:
-- `split_tree.py`에 `adjust_ratio(root, pane_id, direction, delta=0.05)` 추가
-- `keymap.py`에 resize 액션 추가
-- `app.py` dispatcher에 resize 핸들러
-- ratio clamp: 양쪽 모두 `can_split` 최소 크기 이상 유지
-
-**파일**: `terminalist/keymap.py`, `terminalist/frontend/split_tree.py`, `terminalist/app.py`
-**테스트**: `test_split_tree.py`에 adjust_ratio 테스트 추가
-
-## 구현 순서
-
-1. ~~**A-1**: `_set_focus()`~~ ✅
-2. ~~**A-2**: public API~~ ✅
-3. **B-1**: border 하이라이트 — `BorderSegment.active` + compositor 색 분기
-4. **B-2**: 마우스 클릭 포커스 — `hit_test` + app 마우스 처리
-5. **B-3**: 상태바 — app이 geometry 소유, compositor는 그리기만
-6. **B-4**: pane 리사이즈 — `adjust_ratio` + keymap + dispatcher
-
-## 검증
-
-**자동 테스트 (각 단계별)**:
-- `test_split_tree.py`: active border, hit_test, adjust_ratio
-- `test_compositor.py`: render_status_line
-- `test_roundtrip.py`: compositor 변경 후 round-trip 통과
-- `python -m pytest -q tests` 전체 통과
-
-**수동 확인**:
-- focus 전환 시 border 색 변경
-- 마우스 클릭으로 pane 전환
-- 상태바에 pane 정보 표시
-- Ctrl+B Ctrl+방향키로 경계선 이동
-
-## 안 하는 것
-
-- Tab/Window 계층 (Phase 5+, Arrangement 구조)
-- Copy mode / 텍스트 선택
-- 마우스 스크롤 (copy mode 필요)
-- 마우스 드래그 리사이즈
-- Flow / Remote
+1. 현재 제품 기능은 유지한 채 문서와 테스트 자산을 안정화한다.
+2. 다음 큰 기능은 `Tab / Window` 또는 `Copy Mode` 중 하나를 독립 커밋으로 진행한다.
+3. `Flow`와 `Remote`는 그 이후 별도 설계 문서와 함께 들어간다.
