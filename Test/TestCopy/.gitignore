@@ -1,0 +1,6 @@
+latest_meta.txt
+latest_frame.txt
+latest_copy.txt
+__pycache__/
+tests/__pycache__/
+

@@ -8,6 +8,8 @@ Unified test workspace for this repository.
   Product-facing tests for the real `terminalist` codebase.
 - `TestPane/`
   Standalone pane playground and its own tests.
+- `TestCopy/`
+  Standalone copy-mode playground and its own tests.
 - `TestResize/`
   Resize bug repro and investigation assets.
 - `TestVS/`
@@ -24,6 +26,6 @@ By default, pytest collects `Test/terminalist`.
 ## Standalone Suites
 
 ```bash
-python -m pytest -q Test/TestPane/tests Test/TestVS/tests
+python -m pytest -q Test/TestPane/tests Test/TestCopy/tests Test/TestVS/tests
 python Test/TestResize/test_unit.py
 ```
