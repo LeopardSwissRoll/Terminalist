@@ -19,3 +19,11 @@ venv/
 Test/terminalist/roundtrip/output/
 terminalist_render_*
 screen
+
+# ── 문서 / 리서치 노트 (로컬 전용, 실행과 무관) ──
+# CLAUDE.md 는 주입형 프롬프트라 의도적으로 추적 유지한다.
+PLAN.md
+README.md
+*.opinion
+docs/
+reference/*.md
