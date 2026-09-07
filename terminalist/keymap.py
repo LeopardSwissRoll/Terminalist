@@ -21,7 +21,7 @@ class KeyDef:
 # ── Global keys (always active, even when pane is focused) ──
 
 GLOBAL_KEYS: list[KeyDef] = [
-    KeyDef("ctrl+shift+c", "copy_selected_text", "Copy"),
+    KeyDef("ctrl+shift+c", "enter_copy_mode", "Copy"),
 ]
 
 # ── Prefix keys (Ctrl+B → next key) ──
@@ -36,6 +36,7 @@ PREFIX_KEYS: list[KeyDef] = [
     KeyDef("o", "new_codex", "New Codex"),
     KeyDef("s", "new_shell", "New Shell"),
     KeyDef("w", "new_window", "New Window"),
+    KeyDef("[", "enter_copy_mode", "Copy Mode"),
     KeyDef("v", "split_vertical", "VSplit"),
     KeyDef("h", "split_horizontal", "HSplit"),
     KeyDef("x", "close_pane", "Close Pane"),

@@ -78,6 +78,10 @@ class TerminalSession:
         # Dirty tracking — multiple subscribers
         self._dirty_rows: set[int] = set()
         self._on_dirty_listeners: list[Callable[[], None]] = []
+        self._dirty_flush_delay_s = 0.003
+        self._dirty_flush_lock = threading.Lock()
+        self._dirty_flush_timer: threading.Timer | None = None
+        self._dirty_flush_pending = False
 
         # Raw output tap — called with raw PTY data BEFORE pyte feed.
         # Used by interactive mode (stdout passthrough) and future Remote.
@@ -104,12 +108,12 @@ class TerminalSession:
         env_merged = self._merged_env()
         self._backend.spawn(cmdline, cwd, rows, cols, env_merged)
 
+        self._set_state(SessionState.STARTING)
         self._alive = True
         self._reader_thread = threading.Thread(
             target=self._reader_loop, daemon=True
         )
         self._reader_thread.start()
-        self.state = SessionState.STARTING
         log("pty", f"[{self.session_id}] spawned pid={self._backend.pid}, reader thread started")
 
     def kill(self) -> None:
@@ -140,6 +144,7 @@ class TerminalSession:
             and self._reader_thread is not threading.current_thread()
         ):
             self._reader_thread.join(timeout=2.0)
+        self._cancel_dirty_flush()
         self._set_state(SessionState.DEAD)
 
     def _exit_command(self) -> str | None:
@@ -217,6 +222,21 @@ class TerminalSession:
         """Return how many lines this session can scroll upward."""
         with self._lock:
             return len(getattr(getattr(self._screen, "history", None), "top", ()))
+
+    def get_scrollback_lines(self) -> list[str]:
+        """Return history + visible buffer rows as copy/search-friendly text.
+
+        This is the text-source contract for copy mode. It intentionally uses
+        the same runtime path that can materialize empty buffer rows so the
+        result matches real Terminalist behavior after resize/history churn.
+        PreservingScreen.resize() is patched to stay safe under that condition.
+        """
+        with self._lock:
+            cols = self._screen.columns
+            history_top = list(getattr(getattr(self._screen, "history", None), "top", ()))
+            visible_rows = [self._screen.buffer[y] for y in range(self._screen.lines)]
+            combined = history_top + visible_rows
+            return [_row_to_text(row, cols) for row in combined]
 
     # ── PTY I/O (via backend) ──
 
@@ -325,10 +345,10 @@ class TerminalSession:
                         display_tail,
                         cursor=cursor,
                     )
-                for cb in list(self._on_dirty_listeners):
-                    cb()
+                self._schedule_dirty_flush()
                 self._check_state_transition()
         finally:
+            self._flush_dirty_listeners()
             log("pty", f"[{self.session_id}] reader_loop exited after {read_count} reads")
             self._alive = False
             if self.state != SessionState.DEAD:
@@ -345,6 +365,45 @@ class TerminalSession:
             self._on_dirty_listeners.remove(cb)
         except ValueError:
             pass
+
+    def _schedule_dirty_flush(self) -> None:
+        if not self._on_dirty_listeners:
+            return
+        with self._dirty_flush_lock:
+            if self._dirty_flush_pending:
+                return
+            self._dirty_flush_pending = True
+            timer = threading.Timer(self._dirty_flush_delay_s, self._flush_dirty_listeners)
+            timer.daemon = True
+            self._dirty_flush_timer = timer
+            timer.start()
+
+    def _flush_dirty_listeners(self) -> None:
+        with self._dirty_flush_lock:
+            if not self._dirty_flush_pending:
+                return
+            self._dirty_flush_pending = False
+            self._dirty_flush_timer = None
+            dirty_rows = set(self._dirty_rows)
+            self._dirty_rows.clear()
+            listeners = list(self._on_dirty_listeners)
+
+        if dirty_rows and listeners:
+            log(
+                "pyte",
+                f"[{self.session_id}] flush_dirty rows={len(dirty_rows)} listeners={len(listeners)}",
+            )
+        for cb in listeners:
+            cb()
+
+    def _cancel_dirty_flush(self) -> None:
+        with self._dirty_flush_lock:
+            timer = self._dirty_flush_timer
+            self._dirty_flush_timer = None
+            self._dirty_flush_pending = False
+            self._dirty_rows.clear()
+        if timer is not None:
+            timer.cancel()
 
     # ── State management ──
 
@@ -409,6 +468,24 @@ def _row_cell(row, x: int, empty):
         return row[x]
     except (IndexError, KeyError):
         return empty
+
+
+def _row_to_text(row, cols: int) -> str:
+    """Convert a pyte row mapping into plain text.
+
+    Sparse keys become spaces, and CJK stub cells (data == "") are skipped so
+    wide glyphs survive as readable text instead of doubled placeholders.
+    """
+    parts: list[str] = []
+    for x in range(cols):
+        try:
+            data = row[x].data
+        except (IndexError, KeyError):
+            data = " "
+        if data == "":
+            continue
+        parts.append(data or " ")
+    return "".join(parts).rstrip()
 
 
 _EMPTY_ROW = MappingProxyType({})

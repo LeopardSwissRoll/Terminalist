@@ -1,4 +1,8 @@
-"""State model and copy-mode logic for TestCopy."""
+"""Pure copy-mode state machine for pane/local text exploration.
+
+This module intentionally depends only on plain Python data structures so it
+can be reused by Terminalist panes today and Flow-style text sources later.
+"""
 
 from __future__ import annotations
 
@@ -56,8 +60,6 @@ class CopyState:
     selection: Selection | None = None
     search: SearchState = field(default_factory=SearchState)
     copied_text: str = ""
-    running: bool = True
-    last_input: str = "init"
 
     @classmethod
     def create(cls, lines: list[str], width: int, height: int) -> CopyState:
@@ -68,7 +70,7 @@ class CopyState:
 
     @property
     def viewport_height(self) -> int:
-        return max(1, self.height - 1)
+        return max(1, self.height)
 
     @property
     def line_count(self) -> int:
@@ -81,6 +83,10 @@ class CopyState:
     @property
     def live_tail_top(self) -> int:
         return self.max_viewport_top
+
+    @property
+    def scroll_offset(self) -> int:
+        return max(0, self.live_tail_top - self.viewport_top)
 
     @property
     def cursor(self) -> Cursor:
@@ -96,6 +102,56 @@ class CopyState:
         if len(visible) < self.viewport_height:
             visible.extend("" for _ in range(self.viewport_height - len(visible)))
         return visible
+
+    def sync_content(self, lines: list[str], width: int, height: int) -> None:
+        current_match_key = current_match(self)
+        self.lines = list(lines)
+        self.width = width
+        self.height = height
+
+        if self.mode == "live":
+            self.viewport_top = self.live_tail_top
+            self._reset_cursor_to_tail()
+            return
+
+        self.viewport_top = _clamp(self.viewport_top, 0, self.max_viewport_top)
+
+        if self.line_count <= 0:
+            self.cursor_line_abs = 0
+            self.cursor_col = 0
+            self.selection = None
+            self.search.matches = []
+            self.search.active_match_idx = None
+            return
+
+        self.cursor_line_abs = _clamp(self.cursor_line_abs, 0, self.line_count - 1)
+        self.cursor_col = _clamp(self.cursor_col, 0, self._line_cursor_limit_col(self.cursor_line_abs))
+
+        if self.selection is not None:
+            self.selection.anchor_line_abs = _clamp(self.selection.anchor_line_abs, 0, self.line_count - 1)
+            self.selection.cursor_line_abs = _clamp(self.selection.cursor_line_abs, 0, self.line_count - 1)
+            self.selection.anchor_col = _clamp(
+                self.selection.anchor_col,
+                0,
+                self._line_cursor_limit_col(self.selection.anchor_line_abs),
+            )
+            self.selection.cursor_col = _clamp(
+                self.selection.cursor_col,
+                0,
+                self._line_cursor_limit_col(self.selection.cursor_line_abs),
+            )
+
+        if self.search.query:
+            self.search.matches = _find_matches(self.lines, self.search.query)
+            if current_match_key in self.search.matches:
+                self.search.active_match_idx = self.search.matches.index(current_match_key)
+            else:
+                self.search.active_match_idx = None
+        else:
+            self.search.matches = []
+            self.search.active_match_idx = None
+
+        self._sync_selection_to_cursor()
 
     def enter_copy_mode(self) -> None:
         self.mode = "copy"
@@ -134,7 +190,7 @@ class CopyState:
         return True
 
     def move_cursor(self, dx: int = 0, dy: int = 0) -> bool:
-        if self.mode not in {"copy", "search"}:
+        if self.mode not in {"copy", "search"} or self.line_count <= 0:
             return False
         old = (self.cursor_line_abs, self.cursor_col)
         self.cursor_line_abs = _clamp(self.cursor_line_abs + dy, 0, max(0, self.line_count - 1))
@@ -198,6 +254,7 @@ class CopyState:
         self.search.active_match_idx = None
         if not matches:
             return False
+
         # v1 intentionally does not wrap. Only later matches are considered.
         for idx, (line_abs, col_start, _col_end) in enumerate(matches):
             if line_abs > self.cursor_line_abs or (
@@ -238,7 +295,7 @@ class CopyState:
         return True
 
     def _page_move(self, direction: int) -> bool:
-        if self.mode not in {"copy", "search"}:
+        if self.mode not in {"copy", "search"} or self.line_count <= 0:
             return False
         old_top = self.viewport_top
         relative_row = self.cursor_line_abs - self.viewport_top
@@ -281,9 +338,6 @@ class CopyState:
         return len(line) - 1
 
     def _line_cursor_limit_col(self, line_abs: int) -> int:
-        # The cursor model in v1 stays non-negative even on empty lines.
-        # `_line_end_col()` keeps the more semantically accurate -1 sentinel
-        # so empty-line handling is explicit instead of being hidden here.
         return max(0, self._line_end_col(line_abs))
 
     def _reset_cursor_to_tail(self) -> None:
@@ -294,7 +348,11 @@ class CopyState:
                 self.cursor_line_abs = self.viewport_top + rel
                 self.cursor_col = len(line) - 1
                 return
-        self.cursor_line_abs = min(max(0, self.line_count - 1), self.viewport_top + len(visible) - 1)
+        fallback = self.viewport_top + len(visible) - 1
+        if self.line_count > 0:
+            self.cursor_line_abs = min(max(0, self.line_count - 1), fallback)
+        else:
+            self.cursor_line_abs = 0
         self.cursor_col = 0
 
     def _sync_selection_to_cursor(self) -> None:
@@ -304,14 +362,11 @@ class CopyState:
 
 
 def handle_named_key(state: CopyState, key: str) -> None:
-    state.last_input = f"key:{key}"
-    if key == "quit":
-        state.running = False
+    if key == "copy_mode":
+        state.enter_copy_mode()
         return
 
     if state.mode == "live":
-        if key == "copy_mode":
-            state.enter_copy_mode()
         return
 
     if state.mode == "search":
@@ -354,13 +409,11 @@ def handle_named_key(state: CopyState, key: str) -> None:
 
 
 def handle_text_input(state: CopyState, text: str) -> None:
-    state.last_input = f"text:{text}"
     if state.mode == "search":
         state.append_search_text(text)
 
 
 def handle_wheel(state: CopyState, direction: Literal["up", "down"]) -> None:
-    state.last_input = f"wheel:{direction}"
     if direction == "up":
         state.scroll_up_history()
     else:

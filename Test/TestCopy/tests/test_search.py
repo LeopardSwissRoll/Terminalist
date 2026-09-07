@@ -56,3 +56,15 @@ def test_no_match_leaves_state_stable():
     assert state.cursor_line_abs == 1
     assert state.search.active_match_idx is None
 
+
+def test_search_is_non_wrapping_in_v1():
+    state = _enter_copy(["needle here", "middle", "tail"])
+    state.cursor_line_abs = 2
+    state.cursor_col = 0
+    handle_named_key(state, "search")
+    for ch in "needle":
+        handle_text_input(state, ch)
+    handle_named_key(state, "enter")
+    assert state.mode == "copy"
+    assert state.search.active_match_idx is None
+    assert state.cursor_line_abs == 2

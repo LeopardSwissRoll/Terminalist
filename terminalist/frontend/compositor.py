@@ -14,6 +14,7 @@ from functools import lru_cache
 
 from pyte.screens import Char
 
+from terminalist.core.copy_mode import CopyState, current_match
 from terminalist.core.pane import Pane, Rect
 from terminalist.debug import dump_render_snapshot, is_enabled, log
 from terminalist.frontend.screen_sync import EMPTY_CHAR
@@ -45,6 +46,29 @@ BORDER_V_CHAR = _border_char("│", False)
 BORDER_H_CHAR = _border_char("─", False)
 BORDER_V_ACTIVE = _border_char("│", True)
 BORDER_H_ACTIVE = _border_char("─", True)
+
+
+def _copy_overlay_char(cell: Char, style: str) -> Char:
+    if cell.data == "":
+        return cell
+    style_map = {
+        "search_hit": ("black", "bright_cyan", False),
+        "selection": ("black", "bright_yellow", False),
+        "cursor": ("black", "bright_green", True),
+        "cursor_selection": ("black", "bright_magenta", True),
+    }
+    fg, bg, bold = style_map[style]
+    return Char(
+        cell.data,
+        fg,
+        bg,
+        bold,
+        cell.italics,
+        cell.underscore,
+        cell.strikethrough,
+        cell.reverse,
+        cell.blink,
+    )
 
 
 
@@ -103,6 +127,7 @@ class Compositor:
         # pyte screen size may temporarily differ from Rect after resize,
         # so we clip to min(grid_size, rect_size) to prevent leaking.
         for pane in panes:
+            pane.sync_copy_mode()
             r = pane.content_rect
             grid, _, _, _, _ = pane.session.get_screen_snapshot(scroll_offset=pane.scroll_offset)
 
@@ -118,6 +143,8 @@ class Compositor:
                     if fx >= self._width:
                         break
                     frame[fy][fx] = row[gx]
+
+            self._overlay_copy_mode(frame, pane)
 
         focused_id = focused_pane.pane_id if focused_pane else None
         for y, row in enumerate(self._build_border_grid(panes)):
@@ -180,7 +207,16 @@ class Compositor:
                     cells_written += 1
 
             # Position cursor at focused pane
-            if focused_pane and not focused_pane.in_copy_mode:
+            if focused_pane and focused_pane.in_copy_mode:
+                copy_cursor = focused_pane.copy_cursor_position()
+                if copy_cursor is not None:
+                    cx, cy = copy_cursor
+                    r = focused_pane.content_rect
+                    self._writer.move_to(r.x + cx, r.y + cy)
+                    cursor = (r.x + cx, r.y + cy)
+                else:
+                    cursor = None
+            elif focused_pane:
                 _, cx, cy, _, _ = focused_pane.session.get_screen_snapshot(
                     scroll_offset=focused_pane.scroll_offset,
                 )
@@ -248,6 +284,85 @@ class Compositor:
         for x in range(limit):
             row[x] = chars[x]
         return target
+
+    def _overlay_copy_mode(self, frame: list[list[Char]], pane: Pane) -> None:
+        state = pane.copy_mode_state
+        if state is None or state.mode == "live":
+            return
+
+        content = pane.content_rect
+        match = current_match(state)
+        for row_idx in range(min(state.viewport_height, content.h)):
+            fy = content.y + row_idx
+            if not (0 <= fy < self._height):
+                continue
+            line_abs = state.viewport_top + row_idx
+            self._apply_match_overlay(frame, fy, content, line_abs, match)
+            self._apply_selection_overlay(frame, fy, content, line_abs, state)
+            self._apply_cursor_overlay(frame, fy, content, line_abs, state)
+
+    def _apply_match_overlay(
+        self,
+        frame: list[list[Char]],
+        fy: int,
+        content: Rect,
+        line_abs: int,
+        match: tuple[int, int, int] | None,
+    ) -> None:
+        if match is None or match[0] != line_abs:
+            return
+        _, start_col, end_col = match
+        for col in range(max(0, start_col), min(content.w - 1, end_col) + 1):
+            fx = content.x + col
+            if 0 <= fx < self._width:
+                frame[fy][fx] = _copy_overlay_char(frame[fy][fx], "search_hit")
+
+    def _apply_selection_overlay(
+        self,
+        frame: list[list[Char]],
+        fy: int,
+        content: Rect,
+        line_abs: int,
+        state: CopyState,
+    ) -> None:
+        if state.selection is None:
+            return
+
+        (start_line, start_col), (end_line, end_col) = state.selection.ordered_bounds()
+        if not (start_line <= line_abs <= end_line):
+            return
+
+        if start_line == end_line:
+            col_start, col_end = start_col, end_col
+        elif line_abs == start_line:
+            col_start, col_end = start_col, content.w - 1
+        elif line_abs == end_line:
+            col_start, col_end = 0, end_col
+        else:
+            col_start, col_end = 0, content.w - 1
+
+        for col in range(max(0, col_start), min(content.w - 1, col_end) + 1):
+            fx = content.x + col
+            if 0 <= fx < self._width:
+                frame[fy][fx] = _copy_overlay_char(frame[fy][fx], "selection")
+
+    def _apply_cursor_overlay(
+        self,
+        frame: list[list[Char]],
+        fy: int,
+        content: Rect,
+        line_abs: int,
+        state: CopyState,
+    ) -> None:
+        if line_abs != state.cursor_line_abs:
+            return
+        if not (0 <= state.cursor_col < content.w):
+            return
+        fx = content.x + state.cursor_col
+        if not (0 <= fx < self._width):
+            return
+        style = "cursor_selection" if frame[fy][fx].bg == "bright_yellow" else "cursor"
+        frame[fy][fx] = _copy_overlay_char(frame[fy][fx], style)
 
     def _build_border_grid(self, panes: list[Pane]) -> list[list[MaskCell]]:
         mask_grid = [[0 for _ in range(self._width)] for _ in range(self._height)]

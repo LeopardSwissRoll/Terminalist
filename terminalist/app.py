@@ -31,6 +31,8 @@ import time
 
 from pyte.screens import Char
 
+from terminalist.clipboard import copy_text
+from terminalist.core.copy_mode import handle_named_key, handle_text_input
 from terminalist.core.pane import Pane, Rect
 from terminalist.core.session_manager import SessionManager
 from terminalist.debug import detect_env, init_debug, log
@@ -49,7 +51,7 @@ from terminalist.frontend.split_tree import (
 )
 from terminalist.frontend.vt100_writer import VT100Writer
 from terminalist.frontend.window_state import WindowState
-from terminalist.input.handler import InputState, process_events
+from terminalist.input.handler import InputState, _read_prefix_action, process_events
 from terminalist.input.win32 import (
     MOUSE_WHEELED,
     RawConsoleInput,
@@ -61,6 +63,19 @@ from terminalist.input.win32 import (
     terminal_size,
 )
 from terminalist.pyte_patch import apply as patch_pyte
+
+_CTRL_PRESSED_MASK = 0x0004 | 0x0008
+_SHIFT_PRESSED_MASK = 0x0010
+_COPY_SPECIAL_KEYS = {
+    0x25: "left",
+    0x27: "right",
+    0x26: "up",
+    0x28: "down",
+    0x21: "page_up",
+    0x22: "page_down",
+    0x24: "home",
+    0x23: "end",
+}
 
 
 class App:
@@ -82,7 +97,11 @@ class App:
         self._pane_counter = 0
         self._window_counter = 0
         self._input_state = InputState()
-        self._pending_redraw_at: float = 0.0
+        self._render_interval_s = 0.016
+        self._last_render_at = 0.0
+        self._next_render_at = 0.0
+        self._render_immediate_requested = False
+        self._followup_redraw_at = 0.0
 
     def run(self) -> None:
         """Main entry point."""
@@ -129,6 +148,49 @@ class App:
             log("app", "=== Terminalist exited ===")
             print("[terminalist] Session ended.")
 
+    def _request_render(
+        self,
+        immediate: bool = False,
+        *,
+        full: bool = False,
+        follow_up_delay: float | None = None,
+    ) -> None:
+        if self._compositor is None:
+            return
+
+        if full:
+            self._compositor.full_redraw()
+        else:
+            self._compositor.mark_dirty()
+
+        now = time.monotonic()
+        if immediate:
+            self._render_immediate_requested = True
+            self._next_render_at = now
+        elif not self._render_immediate_requested:
+            deadline = max(now, self._last_render_at + self._render_interval_s)
+            if self._next_render_at <= 0.0 or deadline < self._next_render_at:
+                self._next_render_at = deadline
+
+        if follow_up_delay is not None:
+            follow_up_at = now + follow_up_delay
+            if self._followup_redraw_at <= 0.0 or follow_up_at < self._followup_redraw_at:
+                self._followup_redraw_at = follow_up_at
+
+    def _render_due(self, now: float) -> bool:
+        if self._compositor is None or not self._compositor.needs_render():
+            return False
+        if self._render_immediate_requested:
+            return True
+        if self._next_render_at <= 0.0:
+            return True
+        return now >= self._next_render_at
+
+    def _note_rendered(self, now: float) -> None:
+        self._last_render_at = now
+        self._next_render_at = 0.0
+        self._render_immediate_requested = False
+
     def _main_loop(self, h_in: int) -> None:
         """Tick loop: input → render."""
         last_size = terminal_size()
@@ -154,7 +216,7 @@ class App:
                 for index, window in enumerate(self._windows):
                     if index != self._active_window_idx:
                         window.needs_layout = True
-                self._compositor.full_redraw()
+                self._request_render(immediate=True, full=True, follow_up_delay=0.2)
                 log("app", f"Terminal resized: {cols}x{rows}")
 
             if has_events(h_in):
@@ -164,31 +226,35 @@ class App:
                     self._handle_mouse_event(me)
 
                 if keys:
+                    keys = self._consume_global_copy_shortcut(keys)
                     active_pane = self._active_pane()
                     if active_pane and active_pane.in_copy_mode:
-                        active_pane.reset_scroll()
-                        self._compositor.mark_dirty()
-                    write_target = active_pane.write_raw if active_pane else (lambda s: None)
-                    result = process_events(
-                        keys,
-                        write_target,
-                        self._input_state,
-                        on_prefix_key=self._dispatch_prefix,
-                        on_mouse_event=self._handle_mouse_event,
-                        h_in=h_in,
-                    )
-                    if result == "exit":
-                        break
+                        self._process_copy_input(keys, h_in)
+                    elif keys:
+                        write_target = active_pane.write_raw if active_pane else (lambda s: None)
+                        result = process_events(
+                            keys,
+                            write_target,
+                            self._input_state,
+                            on_prefix_key=self._dispatch_prefix,
+                            on_mouse_event=self._handle_mouse_event,
+                            h_in=h_in,
+                        )
+                        if result == "exit":
+                            break
             else:
                 time.sleep(0.01)
 
-            if self._pending_redraw_at and time.monotonic() >= self._pending_redraw_at:
-                self._pending_redraw_at = 0.0
-                self._compositor.full_redraw()
+            now = time.monotonic()
+            if self._followup_redraw_at and now >= self._followup_redraw_at:
+                self._followup_redraw_at = 0.0
+                self._request_render(immediate=True, full=True)
 
             active_window = self._active_window()
             active_root = active_window.active_root() if active_window else None
-            if self._compositor.needs_render() and active_root:
+            if self._render_due(now) and active_root:
+                render_mode = "immediate" if self._render_immediate_requested else "batched"
+                log("render", f"{render_mode} render")
                 rows, cols = last_size
                 self._compositor.render(
                     active_root,
@@ -197,6 +263,7 @@ class App:
                     status_line=self._build_status_line(cols),
                     status_y=self._status_line_y(rows),
                 )
+                self._note_rendered(now)
 
     # ── Window helpers ──
 
@@ -206,7 +273,6 @@ class App:
         self._windows = [window]
         self._active_window_idx = 0
         self._activate_window(0, size=(rows, cols))
-        self._compositor.full_redraw()
 
     def _create_window_state(self, pane: Pane) -> WindowState:
         self._window_counter += 1
@@ -259,7 +325,7 @@ class App:
         if target.needs_layout or target.last_layout_size != (rows, cols):
             self._layout_window(target, rows, cols)
 
-        self._compositor.full_redraw()
+        self._request_render(immediate=True, full=True)
         log("window", f"Activate → slot={index + 1} id={target.window_id}")
 
     def _layout_window(self, window: WindowState, rows: int, cols: int) -> None:
@@ -305,7 +371,11 @@ class App:
         if active_window is None:
             return
         if any(candidate is pane for candidate in active_window.visible_panes()):
-            self._compositor.mark_dirty()
+            self._request_render(immediate=False)
+
+    @staticmethod
+    def _copy_mode_boundary_changed(before: str | None, after: str | None) -> bool:
+        return before != after
 
     # ── Mouse / focus ──
 
@@ -326,9 +396,14 @@ class App:
                 log("mouse", f"scroll {direction} at ({me.x},{me.y}) (no target)")
                 return
 
+            mode_before = target.copy_mode_state.mode if target.copy_mode_state is not None else "live"
             changed = target.scroll_up() if direction == "up" else target.scroll_down()
+            mode_after = target.copy_mode_state.mode if target.copy_mode_state is not None else "live"
             if changed:
-                self._compositor.mark_dirty()
+                self._request_render(
+                    immediate=True,
+                    full=self._copy_mode_boundary_changed(mode_before, mode_after),
+                )
                 log(
                     "mouse",
                     f"scroll {direction} pane={target.pane_id} offset={target.scroll_offset} at ({me.x},{me.y})",
@@ -344,10 +419,115 @@ class App:
             clicked = hit_test(active_root, me.x, me.y) if active_root else None
             if clicked and active_window and clicked is not active_window.focused:
                 active_window.set_focus(clicked)
-                self._compositor.mark_dirty()
+                self._request_render(immediate=True)
                 log("mouse", f"click → focus {clicked.pane_id} at ({me.x},{me.y})")
             else:
                 log("mouse", f"click at ({me.x},{me.y}) (no pane change)")
+
+    def _consume_global_copy_shortcut(self, keys) -> list:
+        active_pane = self._active_pane()
+        if active_pane is None:
+            return keys
+
+        remaining = []
+        entered = False
+        for event in keys:
+            ch, vk, ctrl, repeat = event
+            if vk == 0x43 and (ctrl & _CTRL_PRESSED_MASK) and (ctrl & _SHIFT_PRESSED_MASK):
+                active_pane.enter_copy_mode()
+                entered = True
+                continue
+            remaining.append(event)
+
+        if entered:
+            self._request_render(immediate=True, full=True)
+            log("app", f"Enter copy mode: {active_pane.pane_id} via Ctrl+Shift+C")
+        return remaining
+
+    def _process_copy_input(self, keys, h_in: int) -> None:
+        handled = False
+        full_redraw = False
+
+        for ch, vk, ctrl, repeat in keys:
+            active_pane = self._active_pane()
+            if active_pane is None:
+                break
+            active_pane.sync_copy_mode()
+            state = active_pane.copy_mode_state
+            if state is None:
+                break
+            mode_before = state.mode
+
+            self._input_state.input_count += 1
+            n = self._input_state.input_count
+
+            if ch == "\x02":
+                action = _read_prefix_action(h_in, active_pane.write_raw, n)
+                if action:
+                    self._dispatch_prefix(action, n)
+                    handled = True
+                continue
+
+            if vk in _COPY_SPECIAL_KEYS and ch is None:
+                handle_named_key(state, _COPY_SPECIAL_KEYS[vk])
+                handled = True
+                continue
+
+            if state.mode == "search":
+                if ch in ("\r", "\n"):
+                    handle_named_key(state, "enter")
+                    handled = True
+                elif ch == "\x1b":
+                    handle_named_key(state, "esc")
+                    handled = True
+                elif ch == "\x08":
+                    handle_named_key(state, "backspace")
+                    handled = True
+                elif ch and ord(ch) >= 0x20:
+                    handle_text_input(state, ch)
+                    handled = True
+                if self._copy_mode_boundary_changed(mode_before, state.mode):
+                    full_redraw = True
+                continue
+
+            if ch in ("\r", "\n"):
+                copied_before = state.copied_text
+                mode_before = state.mode
+                handle_named_key(state, "enter")
+                if mode_before != "live" and state.mode == "live" and state.copied_text:
+                    copied = state.copied_text
+                    clipboard_ok = copy_text(copied)
+                    if clipboard_ok:
+                        log("copy", f"[pane:{active_pane.pane_id}] copied {len(copied)} chars to clipboard")
+                    else:
+                        log("copy", f"[pane:{active_pane.pane_id}] clipboard fallback ({len(copied)} chars)")
+                    if copied_before == copied:
+                        log("copy", f"[pane:{active_pane.pane_id}] copied same text again")
+                handled = True
+            elif ch == "\x1b":
+                handle_named_key(state, "esc")
+                handled = True
+            elif ch == "\x08":
+                handle_named_key(state, "backspace")
+                handled = True
+            elif ch == "/":
+                handle_named_key(state, "search")
+                handled = True
+            elif ch == " ":
+                handle_named_key(state, "space")
+                handled = True
+            elif ch == "n":
+                handle_named_key(state, "next_match")
+                handled = True
+            elif ch == "N":
+                handle_named_key(state, "prev_match")
+                handled = True
+
+            if self._copy_mode_boundary_changed(mode_before, state.mode):
+                full_redraw = True
+
+        if handled:
+            self._request_render(immediate=True, full=full_redraw)
 
     # ── Prefix action dispatch ──
 
@@ -357,6 +537,11 @@ class App:
         match action:
             case "new_window":
                 self._new_window("powershell")
+            case "enter_copy_mode":
+                active_pane = self._active_pane()
+                if active_pane:
+                    active_pane.enter_copy_mode()
+                    self._request_render(immediate=True, full=True)
             case "next_tab":
                 self._cycle_window(1)
             case "prev_tab":
@@ -436,8 +621,7 @@ class App:
 
         rows, cols = terminal_size()
         self._layout_window(window, rows, cols)
-        self._compositor.mark_dirty()
-        self._pending_redraw_at = time.monotonic() + 0.2
+        self._request_render(immediate=True, full=True, follow_up_delay=0.2)
         log("app", f"Split {direction.value}: {source_pane.pane_id} + {new_pane.pane_id} (focus={new_pane.pane_id})")
 
     def _close_pane(self) -> None:
@@ -485,7 +669,7 @@ class App:
                 new_index = min(self._active_window_idx, len(self._windows) - 1)
 
             self._activate_window(new_index)
-            self._pending_redraw_at = time.monotonic() + 0.2
+            self._request_render(immediate=True, full=True, follow_up_delay=0.2)
             log("window", f"Closed last pane in {old_window_id}, active slot={self._active_window_idx + 1}")
             return
 
@@ -512,7 +696,7 @@ class App:
         window.set_focus(new_focus)
         rows, cols = terminal_size()
         self._layout_window(window, rows, cols)
-        self._pending_redraw_at = time.monotonic() + 0.2
+        self._request_render(immediate=True, full=True, follow_up_delay=0.2)
         log("app", f"Closed pane {old_id}, focused {window.focused.pane_id}")
 
     def _focus_direction(self, direction: Direction, toward_second: bool) -> None:
@@ -523,7 +707,7 @@ class App:
         neighbor = find_neighbor(active_root, window.focused.pane_id, direction, toward_second)
         if neighbor and neighbor is not window.focused:
             window.set_focus(neighbor)
-            self._compositor.mark_dirty()
+            self._request_render(immediate=True)
 
     def _resize_pane(self, direction: Direction, toward_second: bool) -> None:
         window = self._active_window()
@@ -543,8 +727,7 @@ class App:
 
         rows, cols = terminal_size()
         self._layout_window(window, rows, cols)
-        self._compositor.full_redraw()
-        self._pending_redraw_at = time.monotonic() + 0.2
+        self._request_render(immediate=True, full=True, follow_up_delay=0.2)
         log(
             "layout",
             f"Resize applied: pane={window.focused.pane_id} dir={direction.value} delta={delta:+.2f}",
@@ -570,7 +753,7 @@ class App:
 
         rows, cols = terminal_size()
         self._layout_window(window, rows, cols)
-        self._pending_redraw_at = time.monotonic() + 0.2
+        self._request_render(immediate=True, full=True, follow_up_delay=0.2)
         log("app", f"New {provider} session in split: {new_pane.pane_id}")
 
     def _toggle_zoom(self) -> None:
@@ -583,8 +766,7 @@ class App:
 
         rows, cols = terminal_size()
         self._layout_window(window, rows, cols)
-        self._compositor.mark_dirty()
-        self._pending_redraw_at = time.monotonic() + 0.2
+        self._request_render(immediate=True, full=True, follow_up_delay=0.2)
 
     # ── Chrome ──
 
@@ -624,12 +806,27 @@ class App:
 
         provider = self._provider_label(active_pane)
         state = getattr(getattr(active_pane.session, "state", None), "value", None)
-        right_segment = f"[{active_pane.pane_id}: {provider}"
-        if state:
-            right_segment += f" {state}"
-        if active_pane.scroll_offset:
-            right_segment += f" scroll={active_pane.scroll_offset}"
-        right_segment += "]"
+        copy_state = active_pane.copy_mode_state
+        if copy_state is not None and copy_state.mode != "live":
+            total = copy_state.line_count
+            start = copy_state.viewport_top + 1 if total else 0
+            end = min(total, copy_state.viewport_top + copy_state.viewport_height)
+            selection = "yes" if copy_state.selection is not None else "no"
+            right_segment = (
+                f"[{copy_state.mode.upper()} "
+                f"{start}-{end}/{total} "
+                f"L{copy_state.cursor_line_abs + 1} C{copy_state.cursor_col + 1} "
+                f"sel={selection} "
+                f"q={copy_state.search.query!r} "
+                f"copied={len(copy_state.copied_text)}]"
+            )
+        else:
+            right_segment = f"[{active_pane.pane_id}: {provider}"
+            if state:
+                right_segment += f" {state}"
+            if active_pane.scroll_offset:
+                right_segment += f" scroll={active_pane.scroll_offset}"
+            right_segment += "]"
 
         start = max(x, width - len(right_segment))
         self._write_status_segment(chars, start, right_segment, fg="green", bold=True)

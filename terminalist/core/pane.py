@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from terminalist.core.copy_mode import CopyState
 from terminalist.debug import log
 
 if TYPE_CHECKING:
@@ -58,8 +59,7 @@ class Pane:
         self.frame_rect = base_rect
         self.content_rect = base_rect
         self.focused = False
-        self._copy_mode = False
-        self._scroll_offset = 0
+        self._copy_state: CopyState | None = None
 
         log("session", f"[pane:{pane_id}] created for session={session.session_id} rect={self.content_rect}")
 
@@ -93,57 +93,99 @@ class Pane:
                 "session",
                 f"[pane:{self.pane_id}] resized {old.w}x{old.h} → {content_rect.w}x{content_rect.h}",
             )
+        self.sync_copy_mode()
 
-    # ── Copy mode (placeholder for future) ──
+    # ── Copy mode ──
 
     def enter_copy_mode(self) -> None:
-        self._copy_mode = True
-        self._scroll_offset = 0
+        state = self._ensure_copy_state()
+        state.enter_copy_mode()
         log("session", f"[pane:{self.pane_id}] enter copy mode")
 
     def exit_copy_mode(self) -> None:
-        self._copy_mode = False
-        self._scroll_offset = 0
+        if self._copy_state is not None:
+            self._copy_state.exit_to_live()
         log("session", f"[pane:{self.pane_id}] exit copy mode")
 
     @property
     def in_copy_mode(self) -> bool:
-        return self._copy_mode
+        return self._copy_state is not None and self._copy_state.mode != "live"
 
     @property
     def scroll_offset(self) -> int:
-        return self._scroll_offset
+        if self._copy_state is None:
+            return 0
+        return self._copy_state.scroll_offset
+
+    @property
+    def copied_text(self) -> str:
+        if self._copy_state is None:
+            return ""
+        return self._copy_state.copied_text
+
+    @property
+    def copy_mode_state(self) -> CopyState | None:
+        return self._copy_state
 
     def scroll_up(self, lines: int = 3) -> bool:
-        max_offset = self.session.get_max_scroll_offset()
-        if max_offset <= 0:
+        state = self._ensure_copy_state()
+        if state.live_tail_top <= 0:
             return False
-        new_offset = min(max_offset, self._scroll_offset + max(1, lines))
-        if new_offset == self._scroll_offset:
+        old_offset = state.scroll_offset
+        state.scroll_up_history(lines)
+        if state.scroll_offset == old_offset:
             return False
-        self._copy_mode = True
-        self._scroll_offset = new_offset
-        log("session", f"[pane:{self.pane_id}] scroll up -> offset={self._scroll_offset}")
+        log("session", f"[pane:{self.pane_id}] scroll up -> offset={state.scroll_offset}")
         return True
 
     def scroll_down(self, lines: int = 3) -> bool:
-        new_offset = max(0, self._scroll_offset - max(1, lines))
-        if new_offset == self._scroll_offset:
+        if self._copy_state is None:
             return False
-        self._scroll_offset = new_offset
-        if self._scroll_offset == 0:
-            self._copy_mode = False
+        old_offset = self._copy_state.scroll_offset
+        self._copy_state.scroll_down_history(lines)
+        if self._copy_state.scroll_offset == old_offset:
+            if self._copy_state.mode == "live":
+                log("session", f"[pane:{self.pane_id}] scroll down -> live")
+            return False
+        if self._copy_state.mode == "live":
             log("session", f"[pane:{self.pane_id}] scroll down -> live")
         else:
-            self._copy_mode = True
-            log("session", f"[pane:{self.pane_id}] scroll down -> offset={self._scroll_offset}")
+            log("session", f"[pane:{self.pane_id}] scroll down -> offset={self._copy_state.scroll_offset}")
         return True
 
     def reset_scroll(self) -> None:
-        if self._copy_mode or self._scroll_offset:
-            self._copy_mode = False
-            self._scroll_offset = 0
+        if self._copy_state is not None and (self._copy_state.mode != "live" or self._copy_state.scroll_offset):
+            self._copy_state.exit_to_live()
             log("session", f"[pane:{self.pane_id}] reset scroll")
+
+    def sync_copy_mode(self) -> None:
+        if self._copy_state is None:
+            return
+        self._copy_state.sync_content(
+            self.session.get_scrollback_lines(),
+            self.content_rect.w,
+            self.content_rect.h,
+        )
+
+    def copy_cursor_position(self) -> tuple[int, int] | None:
+        self.sync_copy_mode()
+        if self._copy_state is None or self._copy_state.mode == "live":
+            return None
+        row = self._copy_state.cursor_line_abs - self._copy_state.viewport_top
+        if not (0 <= row < self._copy_state.viewport_height):
+            return None
+        return self._copy_state.cursor_col, row
+
+    def _ensure_copy_state(self) -> CopyState:
+        if self._copy_state is None:
+            self._copy_state = CopyState.create(
+                self.session.get_scrollback_lines(),
+                self.content_rect.w,
+                self.content_rect.h,
+            )
+        else:
+            self.sync_copy_mode()
+        return self._copy_state
 
     # ── Display delegation ──
 

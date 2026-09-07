@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 from terminalist.app import App
+from terminalist.core.copy_mode import handle_named_key
 from terminalist.core.pane import Rect
 from terminalist.frontend.split_tree import Direction, Leaf, Split
 from terminalist.frontend.window_state import WindowState
@@ -26,11 +27,16 @@ def _blank_app() -> App:
     app._active_window_idx = 0
     app._window_history = []
     app._compositor = MagicMock()
-    app._pending_redraw_at = 0.0
+    app._render_interval_s = 0.016
+    app._last_render_at = 0.0
+    app._next_render_at = 0.0
+    app._render_immediate_requested = False
+    app._followup_redraw_at = 0.0
     app._pane_counter = 0
     app._window_counter = 0
     app._input_state = MagicMock()
     app._input_state.track_bracketed_paste = lambda data: None
+    app._input_state.input_count = 0
     app._sm = MagicMock()
     app._running = True
     app._tes = MagicMock()
@@ -174,6 +180,22 @@ def test_mouse_click_focuses_interior_pane_of_active_window():
     assert app._active_window().focused is pane2
 
 
+def test_batched_dirty_render_schedules_next_frame():
+    pane1 = make_pane("pane_1", cols=80, rows=24)
+    app = _make_app(_window("window_1", pane1))
+    app._compositor.reset_mock()
+    app._render_immediate_requested = False
+    app._next_render_at = 0.0
+    app._last_render_at = 10.0
+
+    with patch("terminalist.app.time.monotonic", return_value=10.001):
+        App._mark_dirty_for_pane(app, pane1)
+
+    assert app._render_immediate_requested is False
+    assert app._next_render_at == 10.016
+    app._compositor.mark_dirty.assert_called_once()
+
+
 def test_mouse_wheel_scrolls_hovered_pane_and_updates_status():
     pane1 = make_pane("pane_1", cols=40, rows=6, text="live")
     pane2 = make_pane("pane_2", cols=40, rows=6)
@@ -183,6 +205,7 @@ def test_mouse_wheel_scrolls_hovered_pane_and_updates_status():
     window.set_focus(pane1)
     app = _make_app(window)
     window.layout(Rect(0, 0, 80, 12), terminal_size=(12, 80))
+    app._compositor.reset_mock()
     for i in range(20):
         feed_pane(pane2, f"line-{i}\r\n")
 
@@ -191,7 +214,7 @@ def test_mouse_wheel_scrolls_hovered_pane_and_updates_status():
     assert pane2.scroll_offset == 3
     assert pane2.in_copy_mode is True
     assert app._active_window().focused is pane1
-    app._compositor.mark_dirty.assert_called()
+    app._compositor.full_redraw.assert_called_once()
 
     text = "".join(ch.data for ch in App._build_status_line(app, 120))
     assert "[*1:shell]" in text
@@ -210,7 +233,113 @@ def test_mouse_wheel_falls_back_to_focused_pane():
     assert pane1.scroll_offset == 3
     assert pane1.in_copy_mode is True
     text = "".join(ch.data for ch in App._build_status_line(app, 120))
-    assert "scroll=3" in text
+    assert "[COPY " in text
+    assert "sel=no" in text
+
+
+def test_prefix_copy_mode_enters_copy_mode():
+    pane1 = make_pane("pane_1", cols=80, rows=6)
+    app = _make_app(_window("window_1", pane1))
+    feed_pane(pane1, "alpha\r\nbeta")
+    app._compositor.reset_mock()
+    app._render_immediate_requested = False
+
+    with patch("terminalist.app.time.monotonic", return_value=20.0):
+        App._dispatch_prefix(app, "enter_copy_mode", 1)
+
+    assert pane1.in_copy_mode is True
+    assert pane1.copy_mode_state is not None
+    assert app._render_immediate_requested is True
+    assert app._next_render_at == 20.0
+    app._compositor.full_redraw.assert_called_once()
+
+
+def test_ctrl_shift_c_shortcut_enters_copy_mode():
+    pane1 = make_pane("pane_1", cols=80, rows=6)
+    app = _make_app(_window("window_1", pane1))
+    feed_pane(pane1, "alpha\r\nbeta")
+    app._compositor.reset_mock()
+
+    remaining = App._consume_global_copy_shortcut(app, [("\x03", 0x43, 0x0010 | 0x0008, 1)])
+
+    assert remaining == []
+    assert pane1.in_copy_mode is True
+    app._compositor.full_redraw.assert_called_once()
+
+
+def test_copy_mode_survives_window_switch():
+    pane1 = make_pane("pane_1", cols=80, rows=6)
+    pane2 = make_pane("pane_2", cols=80, rows=6)
+    app = _make_app(_window("window_1", pane1), _window("window_2", pane2))
+    feed_pane(pane1, "alpha\r\nbeta")
+    pane1.enter_copy_mode()
+
+    App._activate_window(app, 1, size=(24, 80))
+    App._activate_window(app, 0, size=(24, 80))
+
+    assert pane1.in_copy_mode is True
+
+
+def test_copy_mode_cursor_move_requests_immediate_render():
+    pane1 = make_pane("pane_1", cols=80, rows=6)
+    app = _make_app(_window("window_1", pane1))
+    feed_pane(pane1, "alpha\r\nbeta")
+    pane1.enter_copy_mode()
+    app._compositor.reset_mock()
+    app._render_immediate_requested = False
+    app._next_render_at = 0.0
+
+    with patch("terminalist.app.time.monotonic", return_value=30.0):
+        App._process_copy_input(app, [(None, 0x25, 0, 1)], h_in=0)
+
+    assert app._render_immediate_requested is True
+    assert app._next_render_at == 30.0
+    app._compositor.mark_dirty.assert_called_once()
+
+
+def test_search_mode_escape_requests_full_redraw():
+    pane1 = make_pane("pane_1", cols=80, rows=6)
+    app = _make_app(_window("window_1", pane1))
+    feed_pane(pane1, "alpha\r\nbeta")
+    pane1.enter_copy_mode()
+    app._compositor.reset_mock()
+
+    with patch("terminalist.app.time.monotonic", return_value=31.0):
+        App._process_copy_input(app, [("/", 0xBF, 0, 1)], h_in=0)
+
+    assert pane1.copy_mode_state is not None
+    assert pane1.copy_mode_state.mode == "search"
+    app._compositor.full_redraw.assert_called_once()
+
+
+def test_copy_mode_prefix_coexists_with_window_navigation():
+    pane1 = make_pane("pane_1", cols=80, rows=6)
+    pane2 = make_pane("pane_2", cols=80, rows=6)
+    app = _make_app(_window("window_1", pane1), _window("window_2", pane2))
+    feed_pane(pane1, "alpha\r\nbeta")
+    pane1.enter_copy_mode()
+
+    with patch("terminalist.app._read_prefix_action", return_value="next_tab"):
+        App._process_copy_input(app, [("\x02", 0x42, 0, 1)], h_in=0)
+
+    assert app._active_window_idx == 1
+
+
+def test_copy_mode_copy_keeps_internal_text_when_clipboard_fails():
+    pane1 = make_pane("pane_1", cols=80, rows=6)
+    app = _make_app(_window("window_1", pane1))
+    feed_pane(pane1, "hello")
+    pane1.enter_copy_mode()
+    state = pane1.copy_mode_state
+    assert state is not None
+    state.start_selection()
+    handle_named_key(state, "left")
+
+    with patch("terminalist.app.copy_text", return_value=False):
+        App._process_copy_input(app, [("\r", 0x0D, 0, 1)], h_in=0)
+
+    assert pane1.in_copy_mode is False
+    assert pane1.copied_text == "lo"
 
 
 def test_status_line_marks_active_window_slot():
@@ -223,6 +352,18 @@ def test_status_line_marks_active_window_slot():
     text = "".join(ch.data for ch in App._build_status_line(app, 80))
     assert "[ 1:shell]" in text
     assert "[*2:shell]" in text
+
+
+def test_status_line_shows_copy_mode_details():
+    pane1 = make_pane("pane_1", cols=80, rows=6)
+    app = _make_app(_window("window_1", pane1))
+    feed_pane(pane1, "alpha\r\nbeta")
+    pane1.enter_copy_mode()
+
+    text = "".join(ch.data for ch in App._build_status_line(app, 120))
+
+    assert "[COPY " in text
+    assert "sel=no" in text
 
 
 def test_resize_pane_updates_split_ratio_only_in_active_window():

@@ -20,7 +20,7 @@ import pyte
 from pyte.screens import Char
 
 from terminalist.core.pane import Pane, Rect
-from terminalist.core.terminal_session import _viewport_rows
+from terminalist.core.terminal_session import _row_to_text, _viewport_rows
 from terminalist.frontend.compositor import Compositor
 from terminalist.frontend.vt100_writer import VT100Writer
 from terminalist.pyte_patch import PreservingScreen, apply as patch_pyte
@@ -98,6 +98,13 @@ class FakeSession:
         with self._lock:
             return len(getattr(getattr(self._screen, "history", None), "top", ()))
 
+    def get_scrollback_lines(self) -> list[str]:
+        with self._lock:
+            cols = self._screen.columns
+            history_top = list(getattr(getattr(self._screen, "history", None), "top", ()))
+            visible_rows = [self._screen.buffer[y] for y in range(self._screen.lines)]
+            return [_row_to_text(row, cols) for row in history_top + visible_rows]
+
     def add_raw_output_listener(self, cb) -> None:
         self._raw_output_listeners.append(cb)
 
@@ -134,15 +141,7 @@ def make_pane(pane_id: str, cols: int = 20, rows: int = 5, text: str = "") -> Pa
         with session._lock:
             session._stream.feed(text)
 
-    p = Pane.__new__(Pane)
-    p.pane_id = pane_id
-    p.session = session
-    p.frame_rect = Rect(0, 0, cols, rows)
-    p.content_rect = Rect(0, 0, cols, rows)
-    p.focused = False
-    p._copy_mode = False
-    p._scroll_offset = 0
-    return p
+    return Pane(pane_id, session, Rect(0, 0, cols, rows))
 
 
 def mock_pane(pane_id: str, cols: int = 80, rows: int = 24) -> Pane:
@@ -152,16 +151,10 @@ def mock_pane(pane_id: str, cols: int = 80, rows: int = 24) -> Pane:
     session._screen = MagicMock()
     session._screen.columns = cols
     session._screen.lines = rows
+    session.get_scrollback_lines.return_value = [""] * rows
+    session.get_max_scroll_offset.return_value = 0
 
-    p = Pane.__new__(Pane)
-    p.pane_id = pane_id
-    p.session = session
-    p.frame_rect = Rect(0, 0, cols, rows)
-    p.content_rect = Rect(0, 0, cols, rows)
-    p.focused = False
-    p._copy_mode = False
-    p._scroll_offset = 0
-    return p
+    return Pane(pane_id, session, Rect(0, 0, cols, rows))
 
 
 def feed_pane(pane: Pane, text: str) -> None:

@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from pyte.screens import Char
 
+from terminalist.core.copy_mode import handle_named_key, handle_text_input
 from terminalist.core.pane import Rect
 from terminalist.frontend.compositor import EMPTY_CHAR
 from terminalist.frontend.split_tree import Leaf, layout
@@ -141,6 +142,56 @@ def test_compose_uses_scrollback_viewport():
     assert lines[2].startswith("L5"), lines
 
 
+def test_compose_overlays_copy_cursor():
+    pane = _make_pane("a", cols=10, rows=3, text="hello")
+    pane.enter_copy_mode()
+    root = Leaf(pane)
+    layout(root, Rect(0, 0, 10, 3))
+
+    comp, _ = _capture_compositor(10, 3)
+    frame = comp.compose(root, Rect(0, 0, 10, 3), focused_pane=pane)
+
+    assert frame[0][4].bg == "bright_green"
+
+
+def test_compose_overlays_selection():
+    pane = _make_pane("a", cols=10, rows=3, text="hello")
+    pane.enter_copy_mode()
+    state = pane.copy_mode_state
+    assert state is not None
+    handle_named_key(state, "space")
+    handle_named_key(state, "left")
+    root = Leaf(pane)
+    layout(root, Rect(0, 0, 10, 3))
+
+    comp, _ = _capture_compositor(10, 3)
+    frame = comp.compose(root, Rect(0, 0, 10, 3), focused_pane=pane)
+
+    assert frame[0][3].bg == "bright_magenta"
+    assert frame[0][4].bg == "bright_yellow"
+
+
+def test_compose_overlays_search_hit():
+    pane = _make_pane("a", cols=20, rows=3, text="xx needle here")
+    pane.enter_copy_mode()
+    state = pane.copy_mode_state
+    assert state is not None
+    state.cursor_line_abs = 0
+    state.cursor_col = 0
+    handle_named_key(state, "search")
+    for ch in "needle":
+        handle_text_input(state, ch)
+    handle_named_key(state, "enter")
+    root = Leaf(pane)
+    layout(root, Rect(0, 0, 20, 3))
+
+    comp, _ = _capture_compositor(20, 3)
+    frame = comp.compose(root, Rect(0, 0, 20, 3), focused_pane=pane)
+
+    assert frame[0][3].bg == "bright_green"
+    assert frame[0][4].bg == "bright_cyan"
+
+
 # ══════════════════════════════════════════════
 #  Main
 # ══════════════════════════════════════════════
@@ -157,6 +208,9 @@ def main():
     run_test("root_border_option_draws_outer_box", test_root_border_option_draws_outer_box)
     run_test("render_status_line_overlays_last_row", test_render_status_line_overlays_last_row)
     run_test("compose_uses_scrollback_viewport", test_compose_uses_scrollback_viewport)
+    run_test("compose_overlays_copy_cursor", test_compose_overlays_copy_cursor)
+    run_test("compose_overlays_selection", test_compose_overlays_selection)
+    run_test("compose_overlays_search_hit", test_compose_overlays_search_hit)
 
     passed = sum(1 for _, ok, _ in results if ok)
     failed = sum(1 for _, ok, _ in results if not ok)

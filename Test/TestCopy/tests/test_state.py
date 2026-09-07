@@ -43,6 +43,15 @@ def test_cursor_clamps_at_boundaries():
     assert state.cursor_col == 0
 
 
+def test_empty_line_end_column_is_explicit_but_cursor_stays_non_negative():
+    state = _state([""])
+    handle_named_key(state, "copy_mode")
+    assert state._line_end_col(0) == -1
+    assert state._line_cursor_limit_col(0) == 0
+    handle_named_key(state, "end")
+    assert state.cursor_col == 0
+
+
 def test_page_navigation_preserves_visible_row_when_possible():
     state = _state([f"line {i}" for i in range(40)])
     handle_named_key(state, "copy_mode")
@@ -52,4 +61,3 @@ def test_page_navigation_preserves_visible_row_when_possible():
     relative_row = state.cursor_line_abs - state.viewport_top
     handle_named_key(state, "page_up")
     assert state.cursor_line_abs - state.viewport_top == relative_row
-
